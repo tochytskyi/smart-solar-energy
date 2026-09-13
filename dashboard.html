@@ -1,0 +1,958 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Night boost</title>
+<style>
+:root {
+  --bg: #f5f6f8;
+  --panel: #ffffff;
+  --panel-2: #fafbfc;
+  --line: #e3e6ea;
+  --ink: #171a1f;
+  --ink-2: #5d6672;
+  --ink-3: #8b94a1;
+  --on: #e8890c;
+  --on-soft: rgba(232, 137, 12, .14);
+  --spare: #17976a;
+  --pv: #d9a400;
+  --load: #3b74e0;
+  --grid: #9aa3af;
+  --warn: #c2700a;
+  --error: #cf3a2e;
+  --night: rgba(59, 116, 224, .06);
+  --day: rgba(217, 164, 0, .07);
+  --radius: 12px;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color-scheme: light;
+}
+/* The explicit toggle wins in both directions; with no toggle the browser decides. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0e1116;
+  --panel: #161a21;
+  --panel-2: #1b2029;
+  --line: #262c36;
+  --ink: #e6e9ee;
+  --ink-2: #9aa4b2;
+  --ink-3: #6b7685;
+  --on: #f0a13a;
+  --on-soft: rgba(240, 161, 58, .16);
+  --spare: #34c48b;
+  --pv: #efc33b;
+  --load: #6ea0ff;
+  --grid: #7b8695;
+  --warn: #e0a13c;
+  --error: #ff6a5b;
+  --night: rgba(110, 160, 255, .07);
+  --day: rgba(239, 195, 59, .07);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #0e1116;
+    --panel: #161a21;
+    --panel-2: #1b2029;
+    --line: #262c36;
+    --ink: #e6e9ee;
+    --ink-2: #9aa4b2;
+    --ink-3: #6b7685;
+    --on: #f0a13a;
+    --on-soft: rgba(240, 161, 58, .16);
+    --spare: #34c48b;
+    --pv: #efc33b;
+    --load: #6ea0ff;
+    --grid: #7b8695;
+    --warn: #e0a13c;
+    --error: #ff6a5b;
+    --night: rgba(110, 160, 255, .07);
+    --day: rgba(239, 195, 59, .07);
+  }
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 14px/1.5 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 1180px; margin: 0 auto; padding: 20px 16px 48px; }
+
+header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 18px; }
+h1 { font-size: 19px; margin: 0; letter-spacing: -.01em; font-weight: 640; }
+header .sub { color: var(--ink-2); font-size: 13px; }
+header .spacer { flex: 1 1 auto; }
+.pill {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 5px 11px; border-radius: 999px; border: 1px solid var(--line);
+  background: var(--panel); font-size: 12.5px; color: var(--ink-2);
+}
+.pill.live .dot { background: var(--spare); animation: pulse 2.4s infinite; }
+.pill.stale { color: var(--warn); border-color: var(--warn); }
+.pill.stale .dot { background: var(--warn); animation: none; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); flex: none; }
+@keyframes pulse { 0%, 100% { opacity: 1 } 50% { opacity: .35 } }
+button, select, input {
+  font: inherit; color: inherit; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; cursor: pointer;
+}
+button:hover, select:hover { border-color: var(--ink-3); }
+button.on { background: var(--ink); color: var(--panel); border-color: var(--ink); }
+input[type=search] { cursor: text; min-width: 0; }
+
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.card {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 14px 15px; min-width: 0;
+}
+.card h2 {
+  margin: 0 0 9px; font-size: 11px; font-weight: 600; letter-spacing: .07em;
+  text-transform: uppercase; color: var(--ink-3);
+}
+.big { font-size: 27px; font-weight: 650; letter-spacing: -.02em; line-height: 1.15; }
+.big .unit { font-size: 15px; font-weight: 500; color: var(--ink-2); margin-left: 2px; }
+.note { color: var(--ink-2); font-size: 12.5px; margin-top: 5px; }
+.note.tight { margin-top: 2px; }
+.state-on { color: var(--on); }
+.state-off { color: var(--ink-2); }
+.bar { height: 6px; border-radius: 4px; background: var(--panel-2); border: 1px solid var(--line); overflow: hidden; margin-top: 9px; }
+.bar > i { display: block; height: 100%; background: var(--spare); }
+.bar.amber > i { background: var(--on); }
+.rows { display: grid; gap: 5px; margin-top: 2px; }
+.row { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; }
+.row span:first-child { color: var(--ink-2); }
+.row span:last-child { font-variant-numeric: tabular-nums; }
+
+.panel {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  margin-top: 14px; overflow: hidden;
+}
+.panel > .head {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 12px 15px; border-bottom: 1px solid var(--line);
+}
+.panel > .head h2 { margin: 0; font-size: 13.5px; font-weight: 620; }
+.panel > .head .spacer { flex: 1 1 auto; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; padding: 5px 11px; font-size: 12.5px; background: transparent; }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button.on { background: var(--ink); color: var(--panel); }
+
+.legend { display: flex; gap: 14px; flex-wrap: wrap; padding: 10px 15px 0; font-size: 12px; color: var(--ink-2); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.swatch { width: 14px; height: 3px; border-radius: 2px; background: currentColor; }
+.swatch.block { height: 10px; width: 10px; border-radius: 3px; }
+
+.chartbox { position: relative; padding: 6px 6px 0; }
+svg { display: block; width: 100%; touch-action: pan-y; }
+.tip {
+  position: absolute; pointer-events: none; opacity: 0; transition: opacity .1s;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 9px;
+  padding: 9px 11px; font-size: 12.5px; box-shadow: 0 8px 26px rgba(0,0,0,.18);
+  min-width: 180px; max-width: 280px; z-index: 5;
+}
+.tip .when { font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); margin-bottom: 5px; }
+.tip .reason { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line); color: var(--ink-2); }
+
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; padding: 9px 15px; }
+td { padding: 7px 15px; border-top: 1px solid var(--line); vertical-align: top; font-size: 13px; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.day { white-space: nowrap; }
+tr.past td { opacity: .58; }
+tr.current td { background: var(--panel-2); }
+tr.current td.day { box-shadow: inset 3px 0 0 var(--pv); font-weight: 600; }
+td.free { color: var(--spare); font-weight: 600; }
+tfoot td { border-top: 1px solid var(--line); color: var(--ink-2); }
+.hourbar { display: flex; align-items: center; gap: 8px; }
+.hourbar i { display: block; height: 9px; border-radius: 3px; background: var(--pv); min-width: 2px; }
+.hourbar span { white-space: nowrap; }
+.dayblock + .dayblock { border-top: 1px solid var(--line); }
+.daycap {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  padding: 10px 15px 0; font-size: 12.5px; color: var(--ink-2);
+}
+.daycap b { color: var(--ink); font-size: 13px; }
+.daycap .spacer { flex: 1 1 auto; }
+tbody tr:hover { background: var(--panel-2); }
+
+.scroller { overflow-x: auto; }
+.log { max-height: 460px; overflow: auto; }
+.log td.t { font-family: var(--mono); font-size: 12px; color: var(--ink-3); white-space: nowrap; width: 1%; }
+.tag {
+  display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px;
+  border: 1px solid var(--line); color: var(--ink-2); background: var(--panel-2); white-space: nowrap;
+}
+tr.warn td.msg { color: var(--warn); }
+tr.error td.msg { color: var(--error); }
+tr.warn .tag { border-color: var(--warn); color: var(--warn); }
+tr.error .tag { border-color: var(--error); color: var(--error); }
+.msg { word-break: break-word; }
+
+.daybar { display: flex; align-items: center; gap: 8px; }
+.daybar i { display: block; height: 9px; border-radius: 3px; background: var(--on); min-width: 2px; }
+.empty { padding: 26px 15px; color: var(--ink-3); text-align: center; }
+footer { margin-top: 16px; color: var(--ink-3); font-size: 12px; display: flex; gap: 14px; flex-wrap: wrap; }
+footer a { color: var(--ink-2); }
+@media (max-width: 560px) {
+  .wrap { padding: 14px 12px 36px; }
+  th, td { padding-left: 12px; padding-right: 12px; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Night boost</h1>
+    <span class="sub" id="subtitle">&nbsp;</span>
+    <span class="spacer"></span>
+    <span class="pill live" id="livepill"><i class="dot"></i><span id="livetext">connecting</span></span>
+    <button id="theme" title="Light / dark">◐</button>
+  </header>
+
+  <section class="cards" id="cards"></section>
+
+  <section class="panel">
+    <div class="head">
+      <h2>Behaviour</h2>
+      <span class="spacer"></span>
+      <div class="seg" id="ranges"></div>
+    </div>
+    <div class="legend" id="legend">
+      <span style="color:var(--on)"><i class="swatch block"></i>socket on (grid)</span>
+      <span style="color:var(--spare)"><i class="swatch block"></i>socket on (solar)</span>
+      <span style="color:var(--pv)"><i class="swatch" style="background:repeating-linear-gradient(90deg,currentColor 0 4px,transparent 4px 7px)"></i>forecast roof kW</span>
+      <span style="color:var(--spare)"><i class="swatch"></i>spare kW (roof − house)</span>
+      <span style="color:var(--load)"><i class="swatch"></i>socket draw kW</span>
+      <span style="color:var(--ink-3)"><i class="swatch block" style="background:var(--night);border:1px solid var(--line)"></i>cheap grid</span>
+      <span style="color:var(--ink-3)"><i class="swatch block" style="background:var(--day);border:1px solid var(--line)"></i>free solar</span>
+    </div>
+    <div class="chartbox" id="chartbox">
+      <svg id="chart" height="330" role="img" aria-label="forecast, spare roof and socket history"></svg>
+      <div class="tip" id="tip"></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="head">
+      <h2>Forecast</h2>
+      <span class="spacer"></span>
+      <span class="sub" id="forecast-when" style="color:var(--ink-3);font-size:12px"></span>
+    </div>
+    <div id="forecast"></div>
+  </section>
+
+  <section class="panel">
+    <div class="head"><h2>Nights</h2><span class="spacer"></span>
+      <span class="sub" style="color:var(--ink-3);font-size:12px">how long the socket ran, on which tariff, and what it drew</span>
+    </div>
+    <div class="scroller" id="days"></div>
+  </section>
+
+  <section class="panel">
+    <div class="head">
+      <h2>Log</h2>
+      <span class="spacer"></span>
+      <div class="seg" id="levels">
+        <button data-level="" class="on">all</button>
+        <button data-level="info">info</button>
+        <button data-level="warn">warn</button>
+        <button data-level="error">error</button>
+      </div>
+      <input type="search" id="q" placeholder="filter…" size="14">
+      <select id="loghours">
+        <option value="24">24 h</option>
+        <option value="72">3 days</option>
+        <option value="168" selected>7 days</option>
+        <option value="720">30 days</option>
+      </select>
+    </div>
+    <div class="log" id="log"></div>
+  </section>
+
+  <footer id="footer"></footer>
+</div>
+
+<script>
+"use strict";
+
+const RANGES = [
+  { label: "6 h",  hours: 6 },
+  { label: "24 h", hours: 24 },
+  { label: "3 d",  hours: 72 },
+  { label: "7 d",  hours: 168 },
+  { label: "30 d", hours: 720 },
+];
+// One minute, to match the watcher's default CHECK_INTERVAL: it decides once a
+// minute, so polling faster only re-fetches a row that has not changed. A tab
+// brought back to the front refreshes at once rather than waiting out the timer.
+const REFRESH_MS = 60000;
+
+const state = {
+  hours: Number(localStorage.getItem("range") || 24),
+  level: "",
+  q: "",
+  logHours: 168,
+  samples: [],
+  forecast: null,
+  forecasts: [],
+  settings: {},
+  chartWidth: 900,
+};
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+async function api(path) {
+  const res = await fetch(path, { cache: "no-store" });
+  if (!res.ok) throw new Error(path + " -> " + res.status);
+  return res.json();
+}
+
+/* ---------- formatting ---------- */
+
+const n1 = (v, unit) => v == null ? "—" : v.toFixed(1) + (unit || "");
+const n0 = (v, unit) => v == null ? "—" : Math.round(v) + (unit || "");
+const kw = (watts) => watts == null ? "—" : (Math.abs(watts) >= 1000
+  ? (watts / 1000).toFixed(2) + " kW" : Math.round(watts) + " W");
+
+function clock(ts) {
+  const d = new Date(ts * 1000);
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+function stamp(ts) {
+  const d = new Date(ts * 1000);
+  const today = new Date().toDateString() === d.toDateString();
+  return (today ? "" : d.toLocaleDateString([], { day: "2-digit", month: "short" }) + " ")
+    + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+function ago(seconds) {
+  if (seconds == null) return "—";
+  if (seconds < 90) return Math.round(seconds) + " s ago";
+  if (seconds < 5400) return Math.round(seconds / 60) + " min ago";
+  if (seconds < 172800) return Math.round(seconds / 3600) + " h ago";
+  return Math.round(seconds / 86400) + " days ago";
+}
+function duration(seconds) {
+  if (!seconds) return "0 min";
+  const h = Math.floor(seconds / 3600), m = Math.round((seconds % 3600) / 60);
+  return h ? h + " h " + (m ? m + " min" : "") : m + " min";
+}
+function bytes(b) {
+  if (b == null) return "—";
+  return b > 1048576 ? (b / 1048576).toFixed(1) + " MB" : Math.round(b / 1024) + " kB";
+}
+
+/* ---------- status cards ---------- */
+
+function renderCards(data) {
+  const s = data.sample || {};
+  const set = data.settings || {};
+  const f = data.forecast;
+  const age = data.now - (s.ts || data.now);
+  const stale = age > Math.max(180, (set.check_interval || 60) * 3);
+
+  $("subtitle").textContent = [
+    set.plug_ip,
+    set.night_start ? "grid " + set.night_start + "–" + set.night_end : null,
+    set.solar_start ? "solar " + set.solar_start + "–" + set.solar_end : null,
+    set.strategy ? set.strategy + " strategy" : null,
+  ].filter(Boolean).join("  ·  ");
+
+  $("livepill").className = "pill " + (stale ? "stale" : "live");
+  $("livetext").textContent = s.ts ? (stale ? "last seen " + ago(age) : "updated " + ago(age)) : "no data yet";
+
+  const on = !!s.socket_on;
+  const target = set.device_daily_kwh || 0;
+  const delivered = s.delivered_kwh;
+  const phase = s.phase || "idle";
+  const phaseLabel = { night: "cheap grid window", solar: "free solar window" }[phase]
+    || "outside both windows";
+
+  const cards = [];
+
+  cards.push(card("Socket", `
+    <div class="big ${on ? "state-on" : "state-off"}">${on ? "ON" : "OFF"}</div>
+    <div class="note tight">${esc(phaseLabel)}${
+      s.plug_power_w == null ? "" : " · drawing " + kw(s.plug_power_w)}</div>
+    ${target > 0 ? `
+      <div class="bar amber"><i style="width:${Math.min(100, 100 * (delivered || 0) / target)}%"></i></div>
+      <div class="note">${delivered == null ? "meter unavailable"
+        : n1(delivered) + " of " + n1(target) + " kWh today"}</div>` : ""}
+  `));
+
+  /* The daytime decision, in one number: what the forecast leaves on the roof
+     this hour once the rest of the house has been served out of it. */
+  const spare = s.spare_kw;
+  const onAt = set.solar_surplus_on_kw, offAt = set.solar_surplus_off_kw;
+  cards.push(card("Spare roof", `
+    <div class="big ${spare == null ? "state-off" : spare >= onAt ? "state-on" : ""}">${
+      spare == null ? "—" : (spare > 0 ? "+" : "") + spare.toFixed(1)}<span class="unit">kW</span></div>
+    <div class="note tight">${spare == null ? "only counted inside the solar window"
+      : "forecast roof less the " + n1(set.house_baseline_kw) + " kW house"}</div>
+    <div class="note">on at ${n1(onAt, " kW")} · off at ${n1(offAt, " kW")}</div>
+  `));
+
+  const next = (data.forecasts || [])[1];
+  cards.push(card("Day ahead", f ? `
+    <div class="big">${n1(f.pv_kwh)}<span class="unit">kWh</span></div>
+    <div class="note tight">${esc(f.day)} · peak ${n1(f.peak_kw)} kW${
+      next ? " · tomorrow " + n1(next.pv_kwh, " kWh") : ""}</div>
+    <div class="note">cloud ${n0(f.cloud_cover, "%")} · rain ${n1(f.rain_mm, " mm")}${
+      s.wet_fraction == null ? "" : " · " + Math.round(s.wet_fraction * 100) + "% of hours wet"}</div>
+  ` : `<div class="big state-off">—</div><div class="note">no forecast recorded yet</div>`));
+
+  cards.push(card("Verdict", `
+    <div class="note" style="color:var(--ink);font-size:13.5px;margin-top:0">${esc(s.reason || "waiting for the first pass")}</div>
+    ${s.free_kwh != null ? `<div class="rows" style="margin-top:8px">
+      <div class="row"><span>free from the day</span><span>${n1(s.free_kwh, " kWh")}</span></div>
+      <div class="row"><span>to buy on cheap grid</span><span>${n1(s.target_kwh, " kWh")}</span></div>
+    </div>` : ""}
+    ${s.wanted != null && !!s.wanted !== on ? `<div class="note" style="color:var(--warn)">
+      wanted ${s.wanted ? "ON" : "OFF"} — the plug did not follow</div>` : ""}
+  `));
+
+  $("cards").innerHTML = cards.join("");
+
+  const st = data.stats || {};
+  $("footer").innerHTML = [
+    `${(st.samples || 0).toLocaleString()} samples · ${(st.events || 0).toLocaleString()} log lines`,
+    `${bytes(st.bytes)} in ${esc(st.path || "")}`,
+    st.oldest ? `since ${stamp(st.oldest)}` : "",
+    st.retention_days ? `kept ${Math.round(st.retention_days)} days` : "",
+  ].filter(Boolean).join(" · ")
+    + ` <a href="/api/export.csv?hours=${state.hours}">download CSV</a>`;
+}
+
+const card = (title, body) => `<div class="card"><h2>${title}</h2>${body}</div>`;
+
+/* ---------- chart ---------- */
+
+function renderChart() {
+  const svg = $("chart");
+  const rows = state.samples;
+  const W = state.chartWidth, H = 330;
+  // top leaves room for the "kW" unit above the highest gridline label
+  const M = { top: 20, right: 16, bottom: 34, left: 44 };
+  const plotW = Math.max(10, W - M.left - M.right);
+  const bandH = 14;
+  const plotH = H - M.top - M.bottom - bandH - 6;
+
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("width", W);
+
+  if (!rows.length) {
+    svg.innerHTML = `<text x="${W / 2}" y="${H / 2}" text-anchor="middle"
+      fill="var(--ink-3)" font-size="13">nothing recorded in this range yet</text>`;
+    return;
+  }
+
+  const now = Date.now() / 1000;
+  const t0 = now - state.hours * 3600;
+  /* Reach forward to the end of the forecast so the rest of today and
+     tomorrow are on the chart - but never let what has not happened yet take
+     more than half of it: a 6 h view is about the last six hours first. */
+  const curves = state.forecasts.length ? state.forecasts
+    : state.forecast ? [state.forecast] : [];
+  let horizon = now;
+  for (const curve of curves) {
+    for (const hour of curve.hours || []) {
+      horizon = Math.max(horizon, Date.parse(hour.time) / 1000 - 1800);
+    }
+  }
+  const t1 = Math.min(horizon, now + state.hours * 3600);
+  const x = (ts) => M.left + plotW * Math.max(0, Math.min(1, (ts - t0) / (t1 - t0)));
+
+  /* Everything on this chart is kW now, so there is one scale - but the spare
+     roof goes negative on a dull morning, so it cannot simply start at zero. */
+  let maxKw = 1, lowest = 0;
+  for (const r of rows) {
+    maxKw = Math.max(maxKw, (r.plug_power_w || 0) / 1000, r.spare_kw || 0);
+    if (r.spare_kw != null) lowest = Math.min(lowest, r.spare_kw);
+  }
+  for (const curve of curves) {
+    for (const hour of curve.hours || []) maxKw = Math.max(maxKw, hour.kw || 0);
+  }
+  /* Round the whole scale onto a step, so the labels are 0, 2, 4 rather than
+     whatever four equal slices of an arbitrary range happen to land on. */
+  const step = niceStep((niceMax(maxKw) - Math.min(0, lowest)) / 4);
+  const minKw = Math.floor(Math.min(0, lowest) / step) * step;
+  maxKw = Math.max(minKw + step, Math.ceil(maxKw / step) * step);
+  const yKw = (v) => M.top + plotH * (1 - (v - minKw) / (maxKw - minKw));
+
+  const parts = [];
+
+  /* both windows, so it is obvious where the program is even allowed to act */
+  const set = state.settings;
+  for (const [start, end, fill] of [[set.night_start, set.night_end, "var(--night)"],
+                                    [set.solar_start, set.solar_end, "var(--day)"]]) {
+    if (!start || !end) continue;
+    for (const [from, to] of dailyWindows(t0, t1, start, end)) {
+      parts.push(`<rect x="${x(from)}" y="${M.top}" width="${Math.max(0, x(to) - x(from))}"
+        height="${plotH}" fill="${fill}"></rect>`);
+    }
+  }
+
+  /* gridlines and the one axis */
+  for (let v = minKw; v <= maxKw + 1e-9; v += step) {
+    const y = yKw(v);
+    parts.push(`<line x1="${M.left}" x2="${M.left + plotW}" y1="${y}" y2="${y}"
+      stroke="var(--line)" stroke-width="${v === 0 ? 1.4 : 1}"></line>`);
+    parts.push(`<text x="${M.left - 7}" y="${y + 4}" text-anchor="end" font-size="10.5"
+      fill="var(--ink-3)">${Math.abs(v % 1) > 1e-9 ? v.toFixed(1) : Math.round(v)}</text>`);
+  }
+  parts.push(`<text x="${M.left - 7}" y="${M.top - 2}" text-anchor="end" font-size="10"
+    fill="var(--ink-3)">kW</text>`);
+
+  /* the two surplus thresholds the solar window switches on - without them the
+     daytime on/off pattern looks arbitrary */
+  for (const [level, label] of [[set.solar_surplus_on_kw, "solar on"],
+                                [set.solar_surplus_off_kw, "solar off"]]) {
+    if (level == null || level > maxKw || level < minKw) continue;
+    const y = yKw(level);
+    parts.push(`<line x1="${M.left}" x2="${M.left + plotW}" y1="${y}" y2="${y}"
+      stroke="var(--spare)" stroke-width="1" stroke-dasharray="3 5" opacity=".45"></line>`);
+    parts.push(`<text x="${M.left + 5}" y="${y - 3}" font-size="9.5" fill="var(--ink-3)"
+      >${label} ${n1(level)} kW</text>`);
+  }
+
+  for (const tick of timeTicks(t0, t1)) {
+    parts.push(`<line x1="${x(tick.ts)}" x2="${x(tick.ts)}" y1="${M.top}" y2="${M.top + plotH}"
+      stroke="var(--line)" stroke-dasharray="2 4"></line>`);
+    parts.push(`<text x="${x(tick.ts)}" y="${H - 8}" text-anchor="middle" font-size="10.5"
+      fill="var(--ink-3)">${tick.label}</text>`);
+  }
+
+  /* the socket's own timeline, under the curves */
+  const bandY = M.top + plotH + 12;
+  parts.push(`<rect x="${M.left}" y="${bandY}" width="${plotW}" height="${bandH}" rx="4"
+    fill="var(--panel-2)" stroke="var(--line)"></rect>`);
+  for (const [from, to, phase] of runsOn(rows, now)) {
+    parts.push(`<rect x="${x(from)}" y="${bandY}" width="${Math.max(1.5, x(to) - x(from))}"
+      height="${bandH}" rx="3" fill="${phase === "solar" ? "var(--spare)" : "var(--on)"}"></rect>`);
+  }
+  parts.push(`<text x="${M.left - 7}" y="${bandY + 11}" text-anchor="end" font-size="10"
+    fill="var(--ink-3)">plug</text>`);
+
+  /* every stored curve - today's and tomorrow's - behind the measured lines.
+     Stamped with the end of the hour it covers, so an hourly mean drawn at its
+     stamp reads an hour late: plot it at the middle of its own hour. */
+  for (const curve of curves) {
+    const pts = (curve.hours || [])
+      .map((hour) => [Date.parse(hour.time) / 1000 - 1800, hour.kw || 0])
+      .filter(([ts]) => ts >= t0 && ts <= t1)
+      .map(([ts, value]) => [x(ts), yKw(value)]);
+    if (pts.length > 1) {
+      parts.push(`<path d="${path(pts)}" fill="none" stroke="var(--pv)" stroke-width="1.6"
+        stroke-dasharray="5 4" opacity=".75"></path>`);
+    }
+  }
+
+  /* where the record stops and the forecast takes over */
+  if (t1 > now + 60) {
+    parts.push(`<line x1="${x(now)}" x2="${x(now)}" y1="${M.top}"
+      y2="${M.top + plotH + bandH + 12}" stroke="var(--ink-3)" stroke-width="1.2"
+      opacity=".5"></line>`);
+    parts.push(`<text x="${x(now) + 4}" y="${M.top + 10}" font-size="10"
+      fill="var(--ink-3)">now</text>`);
+  }
+
+  parts.push(line(rows, x, (r) => r.spare_kw == null ? null : yKw(r.spare_kw), "var(--spare)", 2));
+  parts.push(line(rows, x, (r) => r.plug_power_w == null ? null
+    : yKw(r.plug_power_w / 1000), "var(--load)", 1.6));
+
+  /* hover furniture, moved by the pointer handler */
+  parts.push(`<line id="cross" x1="0" x2="0" y1="${M.top}" y2="${M.top + plotH + bandH + 12}"
+    stroke="var(--ink-3)" stroke-width="1" opacity="0"></line>`);
+  parts.push(`<circle id="cursor" r="3.5" fill="var(--spare)" opacity="0"></circle>`);
+
+  svg.innerHTML = parts.join("");
+  svg.__hover = { rows, x, yKw, M, plotW, W };
+}
+
+function line(rows, x, y, colour, width) {
+  const segments = [];
+  let current = [];
+  for (const r of rows) {
+    const py = y(r);
+    if (py == null) { if (current.length > 1) segments.push(current); current = []; continue; }
+    current.push([x(r.ts), py]);
+  }
+  if (current.length > 1) segments.push(current);
+  return segments.map((seg) =>
+    `<path d="${path(seg)}" fill="none" stroke="${colour}" stroke-width="${width}"
+      stroke-linejoin="round" stroke-linecap="round"></path>`).join("");
+}
+
+const path = (pts) => pts.map(([px, py], i) =>
+  (i ? "L" : "M") + px.toFixed(1) + " " + py.toFixed(1)).join(" ");
+
+function runsOn(rows, until) {
+  /* Contiguous stretches with the socket on, split where the window changed so
+     grid-bought hours and free-solar hours read as different colours. */
+  const runs = [];
+  let from = null, phase = null;
+  for (const r of rows) {
+    const on = !!r.socket_on;
+    if (on && (from == null || r.phase !== phase)) {
+      if (from != null) runs.push([from, r.ts, phase]);
+      from = r.ts; phase = r.phase;
+    } else if (!on && from != null) {
+      runs.push([from, r.ts, phase]); from = null; phase = null;
+    }
+  }
+  if (from != null) runs.push([from, until, phase]);
+  return runs;
+}
+
+function niceMax(v) {
+  const steps = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30, 40, 50];
+  return steps.find((s) => s >= v) || Math.ceil(v / 10) * 10;
+}
+
+function niceStep(v) {
+  const steps = [0.25, 0.5, 1, 2, 2.5, 5, 10, 20, 25, 50];
+  return steps.find((s) => s >= v) || Math.ceil(v / 10) * 10;
+}
+
+function timeTicks(t0, t1) {
+  const span = t1 - t0;
+  const step = span <= 8 * 3600 ? 3600 : span <= 26 * 3600 ? 4 * 3600
+    : span <= 4 * 86400 ? 12 * 3600 : 86400;
+  const ticks = [];
+  const first = Math.ceil(t0 / step) * step;
+  for (let ts = first; ts <= t1; ts += step) {
+    const d = new Date(ts * 1000);
+    // Local midnight is what the eye looks for, so label days, not hours, there.
+    const label = span > 4 * 86400 || d.getHours() === 0
+      ? d.toLocaleDateString([], { day: "2-digit", month: "short" })
+      : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    ticks.push({ ts, label });
+  }
+  return ticks;
+}
+
+function dailyWindows(t0, t1, start, end) {
+  const [sh, sm] = start.split(":").map(Number);
+  const [eh, em] = end.split(":").map(Number);
+  const windows = [];
+  const day = new Date(t0 * 1000);
+  day.setHours(0, 0, 0, 0);
+  for (let d = day.getTime() / 1000 - 86400; d <= t1; d += 86400) {
+    const base = new Date(d * 1000);
+    const from = new Date(base); from.setHours(sh, sm, 0, 0);
+    const to = new Date(base); to.setHours(eh, em, 0, 0);
+    let a = from.getTime() / 1000, b = to.getTime() / 1000;
+    if (b <= a) b += 86400;                       // the window wraps past midnight
+    if (b > t0 && a < t1) windows.push([Math.max(a, t0), Math.min(b, t1)]);
+  }
+  return windows;
+}
+
+/* ---------- hover ---------- */
+
+function hover(event) {
+  const svg = $("chart"), tip = $("tip"), box = svg.__hover;
+  if (!box || !box.rows.length) return;
+  const rect = svg.getBoundingClientRect();
+  const scale = box.W / rect.width;
+  const px = (event.clientX - rect.left) * scale;
+
+  let best = box.rows[0], bestDist = Infinity;
+  for (const r of box.rows) {
+    const d = Math.abs(box.x(r.ts) - px);
+    if (d < bestDist) { bestDist = d; best = r; }
+  }
+
+  const cx = box.x(best.ts);
+  const cross = svg.querySelector("#cross");
+  const cursor = svg.querySelector("#cursor");
+  cross.setAttribute("x1", cx); cross.setAttribute("x2", cx); cross.setAttribute("opacity", ".5");
+  if (best.spare_kw != null) {
+    cursor.setAttribute("cx", cx); cursor.setAttribute("cy", box.yKw(best.spare_kw));
+    cursor.setAttribute("opacity", "1");
+  } else cursor.setAttribute("opacity", "0");
+
+  tip.innerHTML = `
+    <div class="when">${stamp(best.ts)}</div>
+    <div class="row"><span>socket</span><span class="${best.socket_on ? "state-on" : ""}">${best.socket_on ? "ON" : "off"}</span></div>
+    <div class="row"><span>drawing</span><span>${kw(best.plug_power_w)}</span></div>
+    <div class="row"><span>spare roof</span><span>${n1(best.spare_kw, " kW")}</span></div>
+    <div class="row"><span>day ahead</span><span>${n1(best.pv_forecast_kwh, " kWh")}</span></div>
+    ${best.delivered_kwh != null ? `<div class="row"><span>delivered</span><span>${n1(best.delivered_kwh, " kWh")}</span></div>` : ""}
+    <div class="row"><span>window</span><span>${esc({ night: "cheap grid", solar: "free solar" }[best.phase] || "—")}</span></div>
+    ${best.reason ? `<div class="reason">${esc(best.reason)}</div>` : ""}`;
+
+  const left = Math.max(4, Math.min(rect.width - 200, cx / scale - 90));
+  tip.style.left = left + "px";
+  tip.style.top = "18px";
+  tip.style.opacity = "1";
+}
+
+function unhover() {
+  $("tip").style.opacity = "0";
+  const svg = $("chart");
+  const cross = svg.querySelector("#cross"), cursor = svg.querySelector("#cursor");
+  if (cross) cross.setAttribute("opacity", "0");
+  if (cursor) cursor.setAttribute("opacity", "0");
+}
+
+/* ---------- nights ---------- */
+
+const bar = (seconds, longest, colour) => seconds > 0
+  ? `<i style="width:${Math.max(3, 150 * seconds / longest)}px;background:${colour}"></i>` : "";
+
+/* The hour-by-hour outlook, today and tomorrow. Everything here is derived,
+   not recorded: the roof curve is what Open-Meteo said, and spare, the gate
+   and the load's share are the same arithmetic main.py does - shown so the
+   Verdict card's "free from the day" can be checked by eye. */
+function renderForecast(data) {
+  const curves = data.forecasts && data.forecasts.length ? data.forecasts
+    : data.forecast ? [data.forecast] : [];
+  const set = data.settings || {};
+  const box = $("forecast");
+
+  if (!curves.length) {
+    $("forecast-when").textContent = "";
+    box.innerHTML = `<div class="empty">no forecast recorded yet</div>`;
+    return;
+  }
+
+  const now = data.now || Date.now() / 1000;
+  $("forecast-when").textContent = [
+    set.solar_start ? set.solar_start + "–" + set.solar_end : null,
+    curves[0].ts ? "fetched " + ago(now - curves[0].ts) : null,
+  ].filter(Boolean).join(" · ");
+
+  box.innerHTML = curves.map((curve) => forecastDay(curve, set, now, data.sample || {})).join("");
+}
+
+function forecastDay(curve, set, now, sample) {
+  const hours = curve.hours || [];
+  if (!hours.length) return "";
+
+  const baseline = set.house_baseline_kw || 0;
+  const gate = set.solar_surplus_on_kw;
+  const cap = set.device_power_kw;
+  const peak = Math.max(0.1, ...hours.map((hour) => hour.kw || 0));
+
+  let freeHours = 0, freeKwh = 0;
+  const rows = hours.map((hour) => {
+    /* A row is stamped with the END of the hour it covers, so 14:00 is the
+       mean over 13:00-14:00. Label the period, never the stamp. */
+    const ends = Date.parse(hour.time) / 1000;
+    const starts = ends - 3600;
+    const roof = hour.kw || 0;
+    const spare = roof - baseline;
+    const free = gate != null && spare >= gate;
+    const share = free ? Math.min(cap == null ? spare : cap, spare) : 0;
+    if (free) { freeHours++; freeKwh += share; }
+
+    const when = ends <= now ? "past" : starts <= now ? "current" : "";
+    const sky = [
+      hour.cloud_cover == null ? null : "cloud " + n0(hour.cloud_cover, "%"),
+      hour.precipitation ? n1(hour.precipitation, " mm") : null,
+      hour.precipitation_probability >= 30 ? n0(hour.precipitation_probability, "% chance") : null,
+    ].filter(Boolean).join(" · ");
+
+    return `<tr class="${when}">
+      <td class="day">${clock(starts)}–${clock(ends)}</td>
+      <td><div class="hourbar"><i style="width:${Math.max(2, 120 * roof / peak)}px"></i>
+        <span>${n1(roof, " kW")}</span></div></td>
+      <td class="num ${free ? "free" : ""}">${(spare > 0 ? "+" : "") + spare.toFixed(1)} kW</td>
+      <td class="num ${free ? "free" : ""}">${free ? n1(share, " kWh") : "—"}</td>
+      <td class="num" style="color:var(--ink-2)">${esc(sky)}</td>
+    </tr>`;
+  }).join("");
+
+  /* Only tonight's decision buys grid, and only for the day it is deciding
+     about - so the grid line belongs on that day's table and nowhere else. */
+  const decided = sample.target_kwh != null && curve.day === decisionDay(set, now);
+
+  return `<div class="dayblock">
+    <div class="daycap"><b>${esc(dayName(curve.day))}</b>
+      <span>${esc(niceDay(curve.day))}</span><span class="spacer"></span>
+      <span>${n1(curve.pv_kwh, " kWh")} · peak ${n1(curve.peak_kw, " kW")}</span></div>
+    <div class="scroller"><table style="min-width:560px">
+      <thead><tr><th>hour</th><th>roof</th><th class="num">spare</th>
+        <th class="num">to load</th><th class="num">sky</th></tr></thead>
+      <tbody>${rows}</tbody>
+      <tfoot><tr>
+        <td class="day">${n1(curve.pv_kwh, " kWh")}</td>
+        <td colspan="2">${freeHours} hour${freeHours === 1 ? "" : "s"} clear
+          ${n1(gate, " kW")} spare${decided
+            ? " · grid buys " + n1(sample.target_kwh, " kWh") + " tonight" : ""}</td>
+        <td class="num free">${n1(freeKwh, " kWh")}</td>
+        <td class="num">free to the load</td>
+      </tr></tfoot></table></div>
+  </div>`;
+}
+
+const dayOf = (ts) => {
+  const d = new Date(ts * 1000);
+  return [d.getFullYear(), String(d.getMonth() + 1).padStart(2, "0"),
+          String(d.getDate()).padStart(2, "0")].join("-");
+};
+
+/* Which day's sun the night window is betting on - solar_forecast.target_day,
+   in the browser. A 00:00-07:00 window is deciding about today; one that wraps
+   past midnight is, before midnight, already deciding about tomorrow. */
+function decisionDay(set, now) {
+  const wraps = set.night_start && set.night_end && set.night_start > set.night_end;
+  const at = new Date(now * 1000);
+  const hhmm = String(at.getHours()).padStart(2, "0") + ":"
+    + String(at.getMinutes()).padStart(2, "0");
+  return dayOf(wraps && hhmm >= set.night_start ? now + 86400 : now);
+}
+
+function dayName(day) {
+  const today = dayOf(Date.now() / 1000);
+  const tomorrow = dayOf(Date.now() / 1000 + 86400);
+  return day === today ? "Today" : day === tomorrow ? "Tomorrow"
+    : new Date(day + "T12:00").toLocaleDateString([], { weekday: "long" });
+}
+
+const niceDay = (day) =>
+  new Date(day + "T12:00").toLocaleDateString([], { day: "2-digit", month: "short" });
+
+function renderDays(days) {
+  if (!days.length) { $("days").innerHTML = `<div class="empty">no days recorded yet</div>`; return; }
+  const longest = Math.max(...days.map((d) => d.on_seconds), 1);
+  const rows = days.slice().reverse().map((d) => `
+    <tr>
+      <td class="day">${new Date(d.day + "T12:00").toLocaleDateString([], { weekday: "short", day: "2-digit", month: "short" })}</td>
+      <td><div class="daybar">
+        ${bar(d.grid_seconds, longest, "var(--on)")}${bar(d.solar_seconds, longest, "var(--spare)")}
+        <span>${duration(d.on_seconds)}</span></div></td>
+      <td class="num">${d.delivered_kwh == null ? "—" : n1(d.delivered_kwh, " kWh")}</td>
+      <td class="num">${d.spare_max == null ? "—" : n1(d.spare_max, " kW")}</td>
+      <td class="num">${d.pv_forecast_kwh == null ? "—" : n1(d.pv_forecast_kwh, " kWh")}</td>
+    </tr>`).join("");
+  $("days").innerHTML = `<table style="min-width:520px">
+    <thead><tr><th>day</th><th>socket on <span style="color:var(--on)">grid</span> /
+      <span style="color:var(--spare)">solar</span></th><th class="num">delivered</th>
+      <th class="num">best spare</th><th class="num">forecast</th></tr></thead>
+    <tbody>${rows}</tbody></table>`;
+}
+
+/* ---------- log ---------- */
+
+function renderLog(events) {
+  if (!events.length) { $("log").innerHTML = `<div class="empty">nothing matches</div>`; return; }
+  const rows = events.map((e) => `
+    <tr class="${esc(e.level)}">
+      <td class="t">${stamp(e.ts)}</td>
+      <td style="width:1%"><span class="tag">${esc(e.category)}</span></td>
+      <td class="msg">${esc(e.message)}</td>
+    </tr>`).join("");
+  $("log").innerHTML = `<table><tbody>${rows}</tbody></table>`;
+}
+
+/* ---------- wiring ---------- */
+
+function buildRanges() {
+  $("ranges").innerHTML = RANGES.map((r) =>
+    `<button data-hours="${r.hours}" class="${r.hours === state.hours ? "on" : ""}">${r.label}</button>`).join("");
+  $("ranges").onclick = (e) => {
+    const button = e.target.closest("button");
+    if (!button) return;
+    state.hours = Number(button.dataset.hours);
+    localStorage.setItem("range", state.hours);
+    buildRanges();
+    loadChart();
+  };
+}
+
+async function loadState() {
+  try {
+    const data = await api("/api/state");
+    state.settings = data.settings || {};
+    renderCards(data);
+    renderForecast(data);
+  } catch (err) {
+    $("livepill").className = "pill stale";
+    $("livetext").textContent = "watcher unreachable";
+  }
+}
+
+async function loadChart() {
+  try {
+    const data = await api(`/api/samples?hours=${state.hours}`);
+    state.samples = data.samples || [];
+    state.forecast = data.forecast;
+    state.forecasts = data.forecasts || (data.forecast ? [data.forecast] : []);
+    renderChart();
+  } catch (err) { /* the pill already says we are offline */ }
+}
+
+async function loadDays() {
+  try { renderDays((await api("/api/days?days=14")).days || []); } catch (err) { /* as above */ }
+}
+
+async function loadLog() {
+  try {
+    const params = new URLSearchParams({ hours: state.logHours, limit: 300 });
+    if (state.level) params.set("level", state.level);
+    if (state.q) params.set("q", state.q);
+    renderLog((await api("/api/events?" + params)).events || []);
+  } catch (err) { /* as above */ }
+}
+
+function boot() {
+  const saved = localStorage.getItem("theme");
+  if (saved) document.documentElement.dataset.theme = saved;
+  $("theme").onclick = () => {
+    const dark = document.documentElement.dataset.theme
+      ? document.documentElement.dataset.theme === "dark"
+      : matchMedia("(prefers-color-scheme: dark)").matches;
+    const next = dark ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    localStorage.setItem("theme", next);
+  };
+
+  buildRanges();
+
+  $("levels").onclick = (e) => {
+    const button = e.target.closest("button");
+    if (!button) return;
+    state.level = button.dataset.level;
+    [...$("levels").children].forEach((b) => b.classList.toggle("on", b === button));
+    loadLog();
+  };
+  let typing;
+  $("q").oninput = (e) => {
+    clearTimeout(typing);
+    state.q = e.target.value.trim();
+    typing = setTimeout(loadLog, 250);
+  };
+  $("loghours").onchange = (e) => { state.logHours = Number(e.target.value); loadLog(); };
+
+  const svg = $("chart");
+  svg.addEventListener("pointermove", hover);
+  svg.addEventListener("pointerleave", unhover);
+
+  const measure = () => {
+    const width = $("chartbox").clientWidth - 12;
+    if (Math.abs(width - state.chartWidth) > 4) { state.chartWidth = width; renderChart(); }
+  };
+  new ResizeObserver(measure).observe($("chartbox"));
+  state.chartWidth = $("chartbox").clientWidth - 12;
+
+  const refresh = () => {
+    if (document.hidden) return;
+    loadState(); loadChart(); loadDays(); loadLog();
+  };
+  refresh();
+  setInterval(refresh, REFRESH_MS);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
+}
+
+boot();
+</script>
+</body>
+</html>

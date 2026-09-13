@@ -1,0 +1,10 @@
+# Optional overlay for building on the machine you are sitting at instead of
+# pulling from GHCR:
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+
+services:
+  tapo-watcher:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: tapo:local

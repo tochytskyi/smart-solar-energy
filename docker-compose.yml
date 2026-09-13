@@ -1,0 +1,36 @@
+# Run on the Raspberry Pi:
+#   docker compose pull && docker compose up -d
+#
+# Set TAPO_IMAGE in .env (or edit the default below) to your GHCR image, e.g.
+#   TAPO_IMAGE=ghcr.io/your-github-username/tapo:latest
+
+services:
+  tapo-watcher:
+    image: ${TAPO_IMAGE:-ghcr.io/OWNER/tapo:latest}
+    container_name: tapo-watcher
+
+    # The plugs live on your LAN and are reached by raw IP. Host networking puts
+    # the container on the Pi's own interface, so there is no NAT hop between it
+    # and the plugs' local API. Linux-only, which is exactly what the Pi is.
+    #
+    # It also means the dashboard is simply http://<pi>:8080 - no port mapping.
+    network_mode: host
+
+    # Credentials and IPs come from .env at runtime - never from the image.
+    env_file:
+      - .env
+
+    # The logbook the dashboard reads. Keeping it on the host means an image
+    # update, or a `docker compose down`, does not throw the history away.
+    volumes:
+      - ./data:/app/data
+
+    restart: unless-stopped
+    stop_grace_period: 15s
+
+    # The Pi's SD card will thank you.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

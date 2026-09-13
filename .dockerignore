@@ -1,0 +1,22 @@
+# Secrets never go in the image - credentials are passed as env vars at runtime.
+.env
+
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+.git/
+.gitignore
+.github/
+.vscode/
+.idea/
+.DS_Store
+
+tests/
+
+Dockerfile
+.dockerignore
+docker-compose*.yml
+*.md
