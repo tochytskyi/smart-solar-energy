@@ -251,16 +251,22 @@ def _mean(values):
     return sum(numbers) / float(len(numbers)) if numbers else None
 
 
-def target_day(now, night_start, night_end):
-    """Which day's sunshine the current night window is deciding about.
+def target_day(now, solar_end):
+    """Which day's sunshine the watcher is judging.
 
-    For a 00:00-07:00 window that is simply today. For one that wraps past
-    midnight (23:00-07:00), the hours before midnight are already betting on
-    tomorrow's sun.
+    Today, until today's solar window has run out; tomorrow from then on.
+    While the roof still has hours left, everything ahead - the rest of its
+    day, and the night that follows - is about today. Once the sun is off the
+    panels nothing about today can change, and the next thing that can happen
+    is the cheap-grid window, which is buying for tomorrow.
+
+    Keying this to the solar window rather than the night one is what keeps
+    the evening honest. A 00:00-07:00 window read as "today" at 21:00 reported
+    the shortfall for a day that was already over, and went on doing so until
+    midnight rolled the date - while the buy it was about to make was for a
+    day it had not looked at.
     """
-    if night_start <= night_end:
-        return now.date()
-    return now.date() + timedelta(days=1) if now.time() >= night_start else now.date()
+    return now.date() if now.time() < solar_end else now.date() + timedelta(days=1)
 
 
 def from_config():

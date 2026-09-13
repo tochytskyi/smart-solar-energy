@@ -398,21 +398,35 @@ function renderCards(data) {
     <div class="note">on at ${n1(onAt, " kW")} · off at ${n1(offAt, " kW")}</div>
   `));
 
-  const next = (data.forecasts || [])[1];
-  cards.push(card("Day ahead", f ? `
-    <div class="big">${n1(f.pv_kwh)}<span class="unit">kWh</span></div>
-    <div class="note tight">${esc(f.day)} · peak ${n1(f.peak_kw)} kW${
-      next ? " · tomorrow " + n1(next.pv_kwh, " kWh") : ""}</div>
-    <div class="note">cloud ${n0(f.cloud_cover, "%")} · rain ${n1(f.rain_mm, " mm")}${
-      s.wet_fraction == null ? "" : " · " + Math.round(s.wet_fraction * 100) + "% of hours wet"}</div>
+  /* The day the next decision will be made on - today until its solar window
+     is spent, tomorrow from then on. Leading with a day that is already over
+     is the one thing this card must not do. */
+  const curves = (data.forecasts || []).length ? data.forecasts : f ? [f] : [];
+  const ahead = curves.find((curve) => lastHourOf(curve) > data.now) || curves[curves.length - 1];
+  const other = curves.find((curve) => curve !== ahead);
+  /* The wet share is the watcher's own count for the day it is deciding
+     about, so it only belongs here while this card is showing that day. */
+  const wet = ahead && ahead.day === judgedDay(set, data.now) ? s.wet_fraction : null;
+
+  cards.push(card("Day ahead", ahead ? `
+    <div class="big">${n1(ahead.pv_kwh)}<span class="unit">kWh</span></div>
+    <div class="note tight">${esc(dayName(ahead.day))} ${esc(niceDay(ahead.day))} · peak ${
+      n1(ahead.peak_kw)} kW</div>
+    <div class="note">cloud ${n0(ahead.cloud_cover, "%")} · rain ${n1(ahead.rain_mm, " mm")}${
+      wet == null ? "" : " · " + Math.round(wet * 100) + "% of hours wet"}</div>
+    ${other ? `<div class="note tight">${esc(dayName(other.day).toLowerCase())} ${
+      n1(other.pv_kwh, " kWh")}</div>` : ""}
   ` : `<div class="big state-off">—</div><div class="note">no forecast recorded yet</div>`));
 
+  const judged = judgedDay(set, data.now);
   cards.push(card("Verdict", `
     <div class="note" style="color:var(--ink);font-size:13.5px;margin-top:0">${esc(s.reason || "waiting for the first pass")}</div>
     ${s.free_kwh != null ? `<div class="rows" style="margin-top:8px">
       <div class="row"><span>free from the day</span><span>${n1(s.free_kwh, " kWh")}</span></div>
       <div class="row"><span>to buy on cheap grid</span><span>${n1(s.target_kwh, " kWh")}</span></div>
-    </div>` : ""}
+    </div>
+    <div class="note tight">for ${esc(dayName(judged).toLowerCase())} ${esc(niceDay(judged))}</div>`
+    : ""}
     ${s.wanted != null && !!s.wanted !== on ? `<div class="note" style="color:var(--warn)">
       wanted ${s.wanted ? "ON" : "OFF"} — the plug did not follow</div>` : ""}
   `));
@@ -772,7 +786,7 @@ function forecastDay(curve, set, now, sample) {
 
   /* Only tonight's decision buys grid, and only for the day it is deciding
      about - so the grid line belongs on that day's table and nowhere else. */
-  const decided = sample.target_kwh != null && curve.day === decisionDay(set, now);
+  const decided = sample.target_kwh != null && curve.day === judgedDay(set, now);
 
   return `<div class="dayblock">
     <div class="daycap"><b>${esc(dayName(curve.day))}</b>
@@ -793,21 +807,24 @@ function forecastDay(curve, set, now, sample) {
   </div>`;
 }
 
+/* The end of a curve's last hour - when that day's window is finally spent. */
+const lastHourOf = (curve) => (curve.hours || []).reduce(
+  (latest, hour) => Math.max(latest, Date.parse(hour.time) / 1000), 0);
+
 const dayOf = (ts) => {
   const d = new Date(ts * 1000);
   return [d.getFullYear(), String(d.getMonth() + 1).padStart(2, "0"),
           String(d.getDate()).padStart(2, "0")].join("-");
 };
 
-/* Which day's sun the night window is betting on - solar_forecast.target_day,
-   in the browser. A 00:00-07:00 window is deciding about today; one that wraps
-   past midnight is, before midnight, already deciding about tomorrow. */
-function decisionDay(set, now) {
-  const wraps = set.night_start && set.night_end && set.night_start > set.night_end;
+/* Which day's sun the watcher is judging - solar_forecast.target_day, in the
+   browser: today while today's solar window still has hours in it, tomorrow
+   from the moment it ends. */
+function judgedDay(set, now) {
   const at = new Date(now * 1000);
   const hhmm = String(at.getHours()).padStart(2, "0") + ":"
     + String(at.getMinutes()).padStart(2, "0");
-  return dayOf(wraps && hhmm >= set.night_start ? now + 86400 : now);
+  return dayOf(set.solar_end && hhmm >= set.solar_end ? now + 86400 : now);
 }
 
 function dayName(day) {

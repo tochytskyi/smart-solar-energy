@@ -142,6 +142,13 @@ then crops the image, so `--window-size=400,...` shows a false clip - ask for
   decision is close, so that is the sample that matters. (The watcher no longer
   reads the inverter at all, so this calibration is now a manual, occasional
   job against whatever the inverter's own app reports.)
+- **The day being judged follows the solar window, not the night one.**
+  `solar_forecast.target_day` takes `SOLAR_END`: today until the roof's day is
+  spent, tomorrow from then on. Keying it to `NIGHT_START` reads as equivalent
+  and is not - a 00:00-07:00 window was judged "today" all evening, so the page
+  and the log reported the shortfall for a day that was already over, right up
+  until midnight rolled the date. No switch was ever wrong, because nothing is
+  switched outside the windows; everything you read for those six hours was.
 - Open-Meteo stamps an hourly row with the **end** of the hour it covers: the
   14:00 row is the mean irradiance over 13:00-14:00, not a reading at 14:00.
   `solar_forecast._covers` is what stops a window sliding an hour early. Ask for

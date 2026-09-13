@@ -321,7 +321,7 @@ class Recorder:
 
 async def look_ahead(forecast, now):
     """(outlook, wet fraction) for the day this night window is deciding about."""
-    day = solar_forecast.target_day(now, NIGHT_START, NIGHT_END)
+    day = solar_forecast.target_day(now, SOLAR_END)
     try:
         outlook = await asyncio.to_thread(forecast.outlook, day, SOLAR_START, SOLAR_END)
     except solar_forecast.ForecastError as exc:

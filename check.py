@@ -97,7 +97,7 @@ def check_forecast():
         return None
 
     now = datetime.now()
-    day = solar_forecast.target_day(now, watcher.NIGHT_START, watcher.NIGHT_END)
+    day = solar_forecast.target_day(now, watcher.SOLAR_END)
     try:
         outlook = forecast.outlook(day, watcher.SOLAR_START, watcher.SOLAR_END)
     except solar_forecast.ForecastError as exc:

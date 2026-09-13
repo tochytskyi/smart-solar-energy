@@ -77,7 +77,9 @@ http://<pi-address>:8080
 Pi's own address. It shows:
 
 - **the state now** - socket, what it is drawing, the spare roof this hour, the
-  day's forecast, and the verdict sentence with the kWh arithmetic behind it;
+  forecast for the day the next decision will use (today until its solar window
+  is spent, tomorrow from then on), and the verdict sentence with the kWh
+  arithmetic behind it;
 - **a chart** over 6 hours to 30 days, all in kW - the forecast curves, the
   spare roof left after the house, the socket's own measured draw, both windows
   shaded, and a band underneath showing exactly when the socket was on and on
@@ -209,6 +211,14 @@ buy tonight = clamp(DEVICE_DAILY_KWH - free, 0 .. DEVICE_DAILY_KWH)
 `buy tonight == 0` means the day covers it outright and the socket stays off all
 night. If the sun will hand over 4 of the 6 kWh, the grid is asked for 2, not 6 -
 the socket switches off mid-window once the plug's meter says that share is in.
+
+### Which day it is judging
+
+Today, while today's solar window still has hours in it - tomorrow, from the
+moment it ends. At 21:00 the dashboard and `check.py` are therefore showing
+tomorrow's curve and the buy that tonight's window intends to make, not the day
+that has just finished. Inside the night window nothing changes: a 00:00-07:00
+window is judging the day it ends on either way.
 
 Counting the hours rather than the daily total is the point. A washed-out day
 dribbling 12 kWh out at 1.5 kW never clears the threshold and hands the load

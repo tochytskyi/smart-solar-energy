@@ -98,7 +98,7 @@ def plan(outlook):
 def fill(book):
     """Three days of five-minute samples, plus the log lines that go with them."""
     delivered, day_seen = 0.0, None
-    outlook = free = target = wet = None
+    outlook = ahead = None
     moment = time.time() - DAYS * 86400
 
     while moment < time.time():
@@ -107,21 +107,29 @@ def fill(book):
         if day_seen != local.date():
             day_seen, delivered = local.date(), 0.0
             outlook = curve(local.date(), is_bright(local.date()))
-            free, target, wet = plan(outlook)
+            ahead = curve(local.date() + timedelta(days=1),
+                          is_bright(local.date() + timedelta(days=1)))
             book.event("00:00 - a new day, the meter starts again", "info", "decision",
                        at=moment)
 
         night = hour < 7
         solar = SOLAR_FROM <= hour < SOLAR_TO
+        # The day the watcher is judging: today while today's roof still has
+        # hours left, tomorrow from the moment it runs out - so the evening's
+        # numbers preview the night that is coming, not the day just spent.
+        judged = outlook if hour < SOLAR_TO else ahead
+        free, target, wet = plan(judged)
         # What the watcher would see now: the forecast row covering this hour,
-        # less the house. A step per hour, exactly like solar_forecast.hour_row.
-        row = outlook["hours"][int(hour) - SOLAR_FROM] if solar else None
+        # less the house. A step per hour, exactly like solar_forecast.hour_row,
+        # and only inside the window - which is the only time the judged curve
+        # is the one this hour belongs to.
+        row = judged["hours"][int(hour) - SOLAR_FROM] if solar else None
         spare = None if row is None else round(row["kw"] - SETTINGS["house_baseline_kw"], 2)
 
         if night:
             on = delivered < target
             reason = ("%.1f kWh sun, house takes %.1f - %.1f kWh reaches the load free"
-                      % (outlook["pv_kwh"], SETTINGS["house_daytime_kwh"], free))
+                      % (judged["pv_kwh"], SETTINGS["house_daytime_kwh"], free))
             reason += (" - buying %.1f kWh of it from the grid" % target if target
                        else " - covers %.1f kWh, waiting for sun" % SETTINGS["device_daily_kwh"])
         elif solar:
@@ -139,9 +147,9 @@ def fill(book):
         book.sample(
             at=moment, phase="night" if night else "solar" if solar else "idle",
             strategy="forecast",
-            pv_forecast_kwh=outlook["pv_kwh"], peak_kw=outlook["peak_kw"],
+            pv_forecast_kwh=judged["pv_kwh"], peak_kw=judged["peak_kw"],
             spare_kw=spare,
-            cloud_cover=round(outlook["cloud_cover"]), rain_mm=outlook["rain_mm"],
+            cloud_cover=round(judged["cloud_cover"]), rain_mm=judged["rain_mm"],
             wet_fraction=wet,
             plug_power_w=round(SETTINGS["device_power_kw"] * 1000 + random.random() * 120)
                          if on else 0,

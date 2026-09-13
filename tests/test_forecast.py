@@ -66,24 +66,29 @@ class Windows(unittest.TestCase):
         self.assertFalse(in_window(at(10), at(10), at(10)))
 
 
-class WhichDayTheNightIsAbout(unittest.TestCase):
+class WhichDayIsBeingJudged(unittest.TestCase):
+    """Today while its roof still has hours left, tomorrow once it has not."""
 
-    def test_a_window_inside_one_date_means_today(self):
-        now = datetime(2026, 9, 13, 3, 0)
-        self.assertEqual(target_day(now, at(0), at(7)), DAY)
+    def test_the_small_hours_are_about_the_day_that_is_starting(self):
+        self.assertEqual(target_day(datetime(2026, 9, 13, 3, 0), at(18)), DAY)
 
-    def test_before_midnight_a_wrapping_window_bets_on_tomorrow(self):
-        now = datetime(2026, 9, 13, 23, 30)
-        self.assertEqual(target_day(now, at(23), at(7)), DAY + timedelta(days=1))
+    def test_the_middle_of_the_day_is_about_itself(self):
+        self.assertEqual(target_day(datetime(2026, 9, 13, 12, 0), at(18)), DAY)
 
-    def test_after_midnight_it_is_already_that_day(self):
-        now = datetime(2026, 9, 13, 2, 0)
-        self.assertEqual(target_day(now, at(23), at(7)), DAY)
-
-    def test_the_switch_happens_at_the_window_start(self):
-        self.assertEqual(target_day(datetime(2026, 9, 13, 23, 0), at(23), at(7)),
+    def test_the_evening_is_already_about_tomorrow(self):
+        # The night window that follows is buying for a day the roof has not
+        # had yet - reading this as "today" is what left the evening stale.
+        self.assertEqual(target_day(datetime(2026, 9, 13, 21, 0), at(18)),
                          DAY + timedelta(days=1))
-        self.assertEqual(target_day(datetime(2026, 9, 13, 22, 59), at(23), at(7)), DAY)
+
+    def test_the_switch_happens_when_the_solar_window_ends(self):
+        self.assertEqual(target_day(datetime(2026, 9, 13, 17, 59), at(18)), DAY)
+        self.assertEqual(target_day(datetime(2026, 9, 13, 18, 0), at(18)),
+                         DAY + timedelta(days=1))
+
+    def test_late_enough_to_wrap_is_still_tomorrow(self):
+        self.assertEqual(target_day(datetime(2026, 9, 13, 23, 30), at(18)),
+                         DAY + timedelta(days=1))
 
 
 class PanelBearing(unittest.TestCase):
