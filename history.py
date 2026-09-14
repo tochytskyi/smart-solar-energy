@@ -35,7 +35,6 @@ CREATE TABLE IF NOT EXISTS samples (
     strategy            TEXT,
     pv_forecast_kwh     REAL,
     peak_kw             REAL,
-    spare_kw            REAL,
     cloud_cover         REAL,
     rain_mm             REAL,
     wet_fraction        REAL,
@@ -71,7 +70,7 @@ CREATE TABLE IF NOT EXISTS forecasts (
 
 # Every column a sample may carry, in insert order. Anything absent is NULL.
 SAMPLE_FIELDS = (
-    "phase", "strategy", "pv_forecast_kwh", "peak_kw", "spare_kw",
+    "phase", "strategy", "pv_forecast_kwh", "peak_kw",
     "cloud_cover", "rain_mm", "wet_fraction", "plug_power_w", "delivered_kwh",
     "free_kwh", "target_kwh", "wanted", "socket_on", "reason",
 )
@@ -289,7 +288,7 @@ class Logbook:
         since = time.time() - count * 86400.0
         rows = self._execute(lambda conn: [
             dict(row) for row in conn.execute(
-                "SELECT ts, phase, spare_kw, socket_on, delivered_kwh, pv_forecast_kwh"
+                "SELECT ts, phase, target_kwh, socket_on, delivered_kwh, pv_forecast_kwh"
                 " FROM samples WHERE ts >= ? ORDER BY ts", (since,))
         ], default=[])
 
@@ -298,7 +297,7 @@ class Logbook:
             day = time.strftime("%Y-%m-%d", time.localtime(row["ts"]))
             entry = days.setdefault(day, {
                 "day": day, "on_seconds": 0.0, "grid_seconds": 0.0, "solar_seconds": 0.0,
-                "delivered_kwh": None, "spare_max": None,
+                "delivered_kwh": None, "target_kwh": None,
                 "pv_forecast_kwh": None, "samples": 0,
             })
             entry["samples"] += 1
@@ -312,9 +311,12 @@ class Logbook:
                 entry["delivered_kwh"] = max(entry["delivered_kwh"] or 0.0, row["delivered_kwh"])
             if row["pv_forecast_kwh"] is not None:
                 entry["pv_forecast_kwh"] = row["pv_forecast_kwh"]
-            if row["spare_kw"] is not None:
-                entry["spare_max"] = row["spare_kw"] if entry["spare_max"] is None \
-                    else max(entry["spare_max"], row["spare_kw"])
+            # What the cheap window was told to buy. Only night samples count:
+            # after SOLAR_END the watcher is already judging tomorrow, so an
+            # evening's target belongs to the next day's night, not this one.
+            if row["phase"] == "night" and row["target_kwh"] is not None:
+                entry["target_kwh"] = row["target_kwh"] if entry["target_kwh"] is None \
+                    else max(entry["target_kwh"], row["target_kwh"])
         return [days[key] for key in sorted(days)]
 
     def stats(self):

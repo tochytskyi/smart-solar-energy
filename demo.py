@@ -28,9 +28,8 @@ SETTINGS = {
     "sample_interval": 300, "monitor_daytime": True,
     "night_start": "00:00", "night_end": "07:00",
     "solar_start": "10:00", "solar_end": "18:00",
-    "solar_surplus_on_kw": 2.0, "solar_surplus_off_kw": 1.0,
     "device_daily_kwh": 6, "device_power_kw": 2.0,
-    "house_daytime_kwh": 8, "house_baseline_kw": 1.0,
+    "house_daytime_kwh": 8,
 }
 STEP = 300          # the default HISTORY_SAMPLE_INTERVAL
 DAYS = 3
@@ -41,8 +40,8 @@ def is_bright(day):
     """Alternate bright and dull days, counting back from today.
 
     Anchored on today rather than the calendar so the day the page opens on is
-    always the interesting one - a curve that actually clears the surplus gate,
-    with free hours for the hourly panel to show.
+    always the interesting one - a curve that clears the house and leaves the
+    load something, rather than one the night has to buy outright.
     """
     return (date.today() - day).days % 2 == 0
 
@@ -82,12 +81,12 @@ def curve(day, bright):
 def plan(outlook):
     """(free kWh, grid kWh, wet fraction) - main.py's arithmetic, on this curve.
 
-    The same sum `free_solar_kwh` does, so the page's hourly panel and its
-    Verdict card agree here for the same reason they agree on the Pi.
+    The day's total less the house, exactly as `free_solar_kwh` does it, so
+    the page's hourly panel and its Verdict card agree here for the same
+    reason they agree on the Pi.
     """
-    spare = [row["kw"] - SETTINGS["house_baseline_kw"] for row in outlook["hours"]]
-    free = sum(min(SETTINGS["device_power_kw"], value)
-               for value in spare if value >= SETTINGS["solar_surplus_on_kw"])
+    free = min(SETTINGS["device_daily_kwh"],
+               max(0.0, outlook["pv_kwh"] - SETTINGS["house_daytime_kwh"]))
     target = min(SETTINGS["device_daily_kwh"],
                  max(0.0, SETTINGS["device_daily_kwh"] - free))
     wet = sum(1 for row in outlook["hours"]
@@ -119,12 +118,8 @@ def fill(book):
         # numbers preview the night that is coming, not the day just spent.
         judged = outlook if hour < SOLAR_TO else ahead
         free, target, wet = plan(judged)
-        # What the watcher would see now: the forecast row covering this hour,
-        # less the house. A step per hour, exactly like solar_forecast.hour_row,
-        # and only inside the window - which is the only time the judged curve
-        # is the one this hour belongs to.
+        # Only for the hourly log line below - no decision reads this.
         row = judged["hours"][int(hour) - SOLAR_FROM] if solar else None
-        spare = None if row is None else round(row["kw"] - SETTINGS["house_baseline_kw"], 2)
 
         if night:
             on = delivered < target
@@ -133,9 +128,9 @@ def fill(book):
             reason += (" - buying %.1f kWh of it from the grid" % target if target
                        else " - covers %.1f kWh, waiting for sun" % SETTINGS["device_daily_kwh"])
         elif solar:
-            on = spare >= SETTINGS["solar_surplus_on_kw"]
-            reason = ("%.1f kW spare on the roof - heating on free solar" % spare if on
-                      else "only %.1f kW spare - leaving the roof to the house" % spare)
+            on = delivered < SETTINGS["device_daily_kwh"]
+            reason = ("%.1f of %.1f kWh so far - topping up from roof and grid"
+                      % (delivered, SETTINGS["device_daily_kwh"]))
         else:
             on, reason = False, "outside both windows"
 
@@ -148,7 +143,6 @@ def fill(book):
             at=moment, phase="night" if night else "solar" if solar else "idle",
             strategy="forecast",
             pv_forecast_kwh=judged["pv_kwh"], peak_kw=judged["peak_kw"],
-            spare_kw=spare,
             cloud_cover=round(judged["cloud_cover"]), rain_mm=judged["rain_mm"],
             wet_fraction=wet,
             plug_power_w=round(SETTINGS["device_power_kw"] * 1000 + random.random() * 120)
@@ -159,8 +153,8 @@ def fill(book):
         )
 
         if local.minute == 0 and solar:
-            book.event("roof %.1f kW, house takes %.1f, %.1f kW spare"
-                       % (row["kw"], SETTINGS["house_baseline_kw"], spare),
+            book.event("roof %.1f kW this hour, %.1f of %.1f kWh into the load"
+                       % (row["kw"], delivered, SETTINGS["device_daily_kwh"]),
                        "info", "forecast", at=moment)
         if local.hour == 3 and local.minute == 0:
             book.event("forecast unavailable: Open-Meteo unreachable: timed out",

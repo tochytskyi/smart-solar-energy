@@ -53,7 +53,7 @@ def fill(book):
     for index in range(6):
         book.sample(
             at=now - (6 - index) * 300, phase="night" if index < 3 else "solar",
-            strategy="forecast", spare_kw=index - 2.0, plug_power_w=2400 if index < 3 else 0,
+            strategy="forecast", peak_kw=index * 1.0, plug_power_w=2400 if index < 3 else 0,
             socket_on=index < 3, wanted=index < 3,
             delivered_kwh=index * 0.5, free_kwh=2.0, target_kwh=4.0,
             reason='buying 4.0 kWh, "cheaply"' if index < 3 else "outside both windows")

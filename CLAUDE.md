@@ -14,6 +14,11 @@ SQLite logbook, and serves that logbook as a live page.
 The inverter is not read - there was a Deye Cloud client here and it is gone.
 `tests/test_contract.py::TheInverterIsNotRead` fails if it creeps back.
 
+**The forecast reaches the decision as one number a day** - the total the roof
+should make - and it only ever sizes the night's grid buy. The day window is
+the meter alone. `tests/test_contract.py::TheDecisionUsesTheDayTotal` fails if
+per-hour gating creeps back.
+
 `DOCKER.md` is the deployment and behaviour document - the arithmetic of both
 windows is explained there, and it is the file to update when the rules change.
 
@@ -62,11 +67,11 @@ python -m unittest tests.test_decisions -v
 ```
 
 The constants the tests decide against are fixed in `tests/__init__.py`, not
-read from `.env`: 6 kWh/day into a 2 kW load, an 8 kWh house across an 8-hour
-solar window - so the house takes exactly 1.0 kW off every forecast hour and
-every expected number can be worked out by hand. `tests/test_contract.py` is
-the standing rule below, checked by machine - it reads the source and fails
-when a recorded number never reaches the schema, the CSV or the page.
+read from `.env`: 6 kWh/day into a 2 kW load and an 8 kWh house - so every
+expected number is one subtraction from the day's forecast kWh and can be
+worked out by hand. `tests/test_contract.py` is the standing rule below,
+checked by machine - it reads the source and fails when a recorded number
+never reaches the schema, the CSV or the page.
 
 ```bash
 python demo.py                  # invented history + the page on :8080
@@ -78,7 +83,7 @@ tariffs, a cloud outage and a failed switch, without waiting for a night.
 For the real thing:
 
 ```bash
-python check.py                 # socket, forecast, spare-per-hour, the verdict now
+python check.py                 # socket, meter, forecast, the verdict now
 python solar_forecast.py        # today's hourly outlook
 python main.py                  # the watcher, page on DASHBOARD_PORT
 ```
@@ -114,12 +119,18 @@ then crops the image, so `--window-size=400,...` shows a false clip - ask for
   switched. Keep it that way for anything you add there.
 - **The plug's own meter is the single daily budget.** Both windows read it, so
   neither repeats what the other already delivered. Do not add a second counter.
-- **The night predicts what the afternoon will do, off the same curve.**
-  `free_solar_kwh` counts hour by hour, using the same `SOLAR_SURPLUS_ON_KW`
-  gate `decide_solar` switches on. Replacing it with a daily total
-  (`pv_kwh - HOUSE_DAYTIME_KWH`) reads plausible and is wrong: a washout
-  dribbling 12 kWh out at 1.5 kW would promise the load 4 kWh that no hour of
-  the day can actually deliver.
+- **The forecast is one number a day, and only the night reads it.**
+  `free_solar_kwh` is `clamp(pv_kwh - HOUSE_DAYTIME_KWH, 0 .. DEVICE_DAILY_KWH)`
+  and nothing else. There was an hourly version that predicted which hours
+  would clear a `SOLAR_SURPLUS_ON_KW` gate and ran only in those; it left the
+  load cold on any overcast day, because no single hour ever cleared the bar
+  and the night had already decided not to buy. The day total can still be
+  wrong - a day under forecast tops up at the day tariff - but it fails
+  towards a bigger bill rather than a cold load. Keep it that way.
+- **The meter is the only brake on the day window.** `decide_solar` runs from
+  `SOLAR_START` until the meter says the budget is full, so an unreadable meter
+  has to mean off. It used to need the forecast's permission to run at all;
+  that second opinion is gone.
 
 ## Things that have bitten
 

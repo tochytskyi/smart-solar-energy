@@ -199,13 +199,43 @@ class TheInverterIsNotRead(unittest.TestCase):
         self.assertEqual([key for key in documented if key.startswith("DEYE")], [])
 
 
+class TheDecisionUsesTheDayTotal(unittest.TestCase):
+    """The forecast reaches the decision as one number a day, not as a curve.
+
+    The hourly version is the natural thing to write, and it was here once: it
+    predicted which individual hours would be sunny enough to carry the load
+    and refused the rest, so an overcast day that never cleared the gate left
+    the load cold. This fails if per-hour gating creeps back.
+    """
+
+    def test_free_solar_reads_the_day_total_and_not_the_hours(self):
+        source = ast.get_source_segment(
+            (ROOT / "main.py").read_text(),
+            next(node for node in ast.walk(MAIN)
+                 if isinstance(node, ast.FunctionDef) and node.name == "free_solar_kwh"))
+        self.assertIn('pv_kwh', source)
+        self.assertNotIn('"hours"', source,
+                         "free_solar_kwh is walking the curve again")
+
+    def test_the_day_window_takes_no_forecast_at_all(self):
+        decide = next(node for node in ast.walk(MAIN)
+                      if isinstance(node, ast.FunctionDef) and node.name == "decide_solar")
+        self.assertEqual([arg.arg for arg in decide.args.args], ["delivered"],
+                         "decide_solar has grown an argument; the day window is"
+                         " the meter and nothing else")
+
+    def test_no_surplus_thresholds_are_left_anywhere(self):
+        for name in TheInverterIsNotRead.SOURCES + (".env.example",):
+            self.assertNotIn("SOLAR_SURPLUS", (ROOT / name).read_text(),
+                             "%s still carries a per-hour surplus gate" % name)
+
+
 class TheDeployedDocument(unittest.TestCase):
     """DOCKER.md is the behaviour document; the thresholds live in both."""
 
     def test_it_mentions_every_window_and_threshold(self):
         docker = (ROOT / "DOCKER.md").read_text()
         for key in ("NIGHT_START", "NIGHT_END", "SOLAR_START", "SOLAR_END",
-                    "SOLAR_SURPLUS_ON_KW", "SOLAR_SURPLUS_OFF_KW",
                     "DEVICE_DAILY_KWH", "DEVICE_POWER_KW", "HOUSE_DAYTIME_KWH",
                     "BOOST_STRATEGY"):
             self.assertIn(key, docker)

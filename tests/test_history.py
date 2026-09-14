@@ -40,10 +40,10 @@ class Booked(unittest.TestCase):
 class Samples(Booked):
 
     def test_a_sample_comes_back_as_it_went_in(self):
-        self.book.sample(phase="night", spare_kw=2.4, free_kwh=2.0, reason="buying 4.0 kWh")
+        self.book.sample(phase="night", target_kwh=2.4, free_kwh=2.0, reason="buying 4.0 kWh")
         row = self.book.latest_sample()
         self.assertEqual(row["phase"], "night")
-        self.assertEqual(row["spare_kw"], 2.4)
+        self.assertEqual(row["target_kwh"], 2.4)
         self.assertEqual(row["reason"], "buying 4.0 kWh")
 
     def test_booleans_are_stored_as_numbers(self):
@@ -55,7 +55,7 @@ class Samples(Booked):
 
     def test_an_unknown_reading_is_left_null(self):
         self.book.sample(phase="idle")
-        self.assertIsNone(self.book.latest_sample()["spare_kw"])
+        self.assertIsNone(self.book.latest_sample()["target_kwh"])
 
     def test_an_unrecognised_field_is_ignored_not_fatal(self):
         # A field added to the loop before the schema must not stop recording.
@@ -219,16 +219,19 @@ class Days(Booked):
     def fill(self):
         noon = noon_today()
         rows = [
-            # ts,              phase,   on, spare, delivered
-            (noon,             "solar", 1, 2.5,  1.0),
+            # ts,              phase,   on, target, delivered
+            # The solar and idle targets are deliberately larger than the
+            # night's: after SOLAR_END the watcher is judging tomorrow, so
+            # only a night sample says what THIS night was asked to buy.
+            (noon,             "solar", 1, 3.8,  1.0),
             (noon + 300,       "solar", 1, 3.8,  2.0),
-            (noon + 600,       "solar", 1, 3.1,  2.5),   # then a long gap
-            (noon + 600 + 1800, "idle", 0, None, 2.5),
-            (noon + 3000,      "night", 1, None, 2.5),
-            (noon + 3300,      "night", 0, None, 3.5),
+            (noon + 600,       "solar", 1, 3.8,  2.5),   # then a long gap
+            (noon + 600 + 1800, "idle", 0, 3.8,  2.5),
+            (noon + 3000,      "night", 1, 2.0,  2.5),
+            (noon + 3300,      "night", 0, 2.0,  3.5),
         ]
-        for ts, phase, on, spare, delivered in rows:
-            self.book.sample(at=ts, phase=phase, socket_on=on, spare_kw=spare,
+        for ts, phase, on, target, delivered in rows:
+            self.book.sample(at=ts, phase=phase, socket_on=on, target_kwh=target,
                              delivered_kwh=delivered, pv_forecast_kwh=9.0)
         return noon
 
@@ -251,9 +254,13 @@ class Days(Booked):
         self.fill()
         self.assertAlmostEqual(self.book.days()[0]["delivered_kwh"], 3.5)
 
-    def test_the_best_spare_of_the_day_is_kept(self):
+    def test_the_nights_grid_share_is_kept(self):
         self.fill()
-        self.assertAlmostEqual(self.book.days()[0]["spare_max"], 3.8)
+        self.assertAlmostEqual(self.book.days()[0]["target_kwh"], 2.0)
+
+    def test_a_day_that_never_entered_the_night_window_has_no_share(self):
+        self.book.sample(at=noon_today(), phase="solar", target_kwh=4.0)
+        self.assertIsNone(self.book.days()[0]["target_kwh"])
 
     def test_the_samples_are_counted(self):
         self.fill()
@@ -274,7 +281,7 @@ class Days(Booked):
     def test_a_day_with_no_readings_reports_nothing_rather_than_zero(self):
         self.book.sample(at=noon_today(), phase="idle", socket_on=0)
         day = self.book.days()[0]
-        self.assertIsNone(day["spare_max"])
+        self.assertIsNone(day["target_kwh"])
         self.assertIsNone(day["delivered_kwh"])
 
 
@@ -422,7 +429,7 @@ class SchemaReading(unittest.TestCase):
         self.assertTrue(set(history.SAMPLE_FIELDS) <= columns)
 
     def test_the_types_come_with_the_names(self):
-        self.assertIn(("spare_kw", "REAL"), history._schema_columns()["samples"])
+        self.assertIn(("target_kwh", "REAL"), history._schema_columns()["samples"])
 
 
 class BrokenDisk(unittest.TestCase):
@@ -444,7 +451,7 @@ class BrokenDisk(unittest.TestCase):
     def test_writing_to_it_does_not_raise(self):
         with quiet():
             book = history.Logbook(self.path)
-            book.sample(phase="night", spare_kw=2.4)
+            book.sample(phase="night", target_kwh=2.4)
             book.event("socket is ON", "info", "plug")
             book.forecast(outlook(date(2026, 9, 13), [1.0]))
             book.prune()

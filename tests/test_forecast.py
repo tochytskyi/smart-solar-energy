@@ -419,44 +419,6 @@ class WindowLength(unittest.TestCase):
         self.assertAlmostEqual(window_hours(at(0), at(0)), 24.0)
 
 
-class TheHourWeAreStandingIn(unittest.TestCase):
-    """hour_row: the forecast row covering a moment, for the daytime decision.
-
-    A row is stamped with the END of its hour, so the 11:00 row is what the
-    decision reads at 10:00 and at 10:59 - and not at 11:00.
-    """
-
-    def outlook(self):
-        rows = [hour(datetime.combine(DAY, at(h)), kw=float(h)) for h in range(11, 15)]
-        return stocked(rows).outlook(DAY, at(10), at(14))
-
-    def row_at(self, hour_, minute=0):
-        row = solar_forecast.hour_row(self.outlook(), datetime.combine(DAY, at(hour_, minute)))
-        return None if row is None else row["kw"]
-
-    def test_the_start_of_an_hour_reads_that_hour(self):
-        self.assertAlmostEqual(self.row_at(10), 11.0)
-
-    def test_the_last_minute_still_reads_the_same_hour(self):
-        self.assertAlmostEqual(self.row_at(10, 59), 11.0)
-
-    def test_the_next_hour_moves_on(self):
-        self.assertAlmostEqual(self.row_at(11), 12.0)
-
-    def test_a_moment_before_the_window_has_no_row(self):
-        self.assertIsNone(self.row_at(9, 59))
-
-    def test_a_moment_after_the_window_has_no_row(self):
-        # Which is how the loop knows there is no surplus to speak of outside
-        # the solar window, rather than guessing at one.
-        self.assertIsNone(self.row_at(14))
-
-    def test_another_day_has_no_row(self):
-        row = solar_forecast.hour_row(
-            self.outlook(), datetime.combine(DAY + timedelta(days=1), at(12)))
-        self.assertIsNone(row)
-
-
 class Mean(unittest.TestCase):
 
     def test_it_skips_the_gaps(self):

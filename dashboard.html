@@ -16,7 +16,7 @@
   --ink-3: #8b94a1;
   --on: #e8890c;
   --on-soft: rgba(232, 137, 12, .14);
-  --spare: #17976a;
+  --solar: #17976a;
   --pv: #d9a400;
   --load: #3b74e0;
   --grid: #9aa3af;
@@ -41,7 +41,7 @@
   --ink-3: #6b7685;
   --on: #f0a13a;
   --on-soft: rgba(240, 161, 58, .16);
-  --spare: #34c48b;
+  --solar: #34c48b;
   --pv: #efc33b;
   --load: #6ea0ff;
   --grid: #7b8695;
@@ -62,7 +62,7 @@
     --ink-3: #6b7685;
     --on: #f0a13a;
     --on-soft: rgba(240, 161, 58, .16);
-    --spare: #34c48b;
+    --solar: #34c48b;
     --pv: #efc33b;
     --load: #6ea0ff;
     --grid: #7b8695;
@@ -90,7 +90,7 @@ header .spacer { flex: 1 1 auto; }
   padding: 5px 11px; border-radius: 999px; border: 1px solid var(--line);
   background: var(--panel); font-size: 12.5px; color: var(--ink-2);
 }
-.pill.live .dot { background: var(--spare); animation: pulse 2.4s infinite; }
+.pill.live .dot { background: var(--solar); animation: pulse 2.4s infinite; }
 .pill.stale { color: var(--warn); border-color: var(--warn); }
 .pill.stale .dot { background: var(--warn); animation: none; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); flex: none; }
@@ -119,7 +119,7 @@ input[type=search] { cursor: text; min-width: 0; }
 .state-on { color: var(--on); }
 .state-off { color: var(--ink-2); }
 .bar { height: 6px; border-radius: 4px; background: var(--panel-2); border: 1px solid var(--line); overflow: hidden; margin-top: 9px; }
-.bar > i { display: block; height: 100%; background: var(--spare); }
+.bar > i { display: block; height: 100%; background: var(--solar); }
 .bar.amber > i { background: var(--on); }
 .rows { display: grid; gap: 5px; margin-top: 2px; }
 .row { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; }
@@ -165,7 +165,7 @@ td.day { white-space: nowrap; }
 tr.past td { opacity: .58; }
 tr.current td { background: var(--panel-2); }
 tr.current td.day { box-shadow: inset 3px 0 0 var(--pv); font-weight: 600; }
-td.free { color: var(--spare); font-weight: 600; }
+td.free { color: var(--solar); font-weight: 600; }
 tfoot td { border-top: 1px solid var(--line); color: var(--ink-2); }
 .hourbar { display: flex; align-items: center; gap: 8px; }
 .hourbar i { display: block; height: 9px; border-radius: 3px; background: var(--pv); min-width: 2px; }
@@ -224,15 +224,14 @@ footer a { color: var(--ink-2); }
     </div>
     <div class="legend" id="legend">
       <span style="color:var(--on)"><i class="swatch block"></i>socket on (grid)</span>
-      <span style="color:var(--spare)"><i class="swatch block"></i>socket on (solar)</span>
+      <span style="color:var(--solar)"><i class="swatch block"></i>socket on (solar)</span>
       <span style="color:var(--pv)"><i class="swatch" style="background:repeating-linear-gradient(90deg,currentColor 0 4px,transparent 4px 7px)"></i>forecast roof kW</span>
-      <span style="color:var(--spare)"><i class="swatch"></i>spare kW (roof − house)</span>
       <span style="color:var(--load)"><i class="swatch"></i>socket draw kW</span>
       <span style="color:var(--ink-3)"><i class="swatch block" style="background:var(--night);border:1px solid var(--line)"></i>cheap grid</span>
       <span style="color:var(--ink-3)"><i class="swatch block" style="background:var(--day);border:1px solid var(--line)"></i>free solar</span>
     </div>
     <div class="chartbox" id="chartbox">
-      <svg id="chart" height="330" role="img" aria-label="forecast, spare roof and socket history"></svg>
+      <svg id="chart" height="330" role="img" aria-label="forecast roof, socket draw and socket history"></svg>
       <div class="tip" id="tip"></div>
     </div>
   </section>
@@ -386,16 +385,17 @@ function renderCards(data) {
         : n1(delivered) + " of " + n1(target) + " kWh today"}</div>` : ""}
   `));
 
-  /* The daytime decision, in one number: what the forecast leaves on the roof
-     this hour once the rest of the house has been served out of it. */
-  const spare = s.spare_kw;
-  const onAt = set.solar_surplus_on_kw, offAt = set.solar_surplus_off_kw;
-  cards.push(card("Spare roof", `
-    <div class="big ${spare == null ? "state-off" : spare >= onAt ? "state-on" : ""}">${
-      spare == null ? "—" : (spare > 0 ? "+" : "") + spare.toFixed(1)}<span class="unit">kW</span></div>
-    <div class="note tight">${spare == null ? "only counted inside the solar window"
-      : "forecast roof less the " + n1(set.house_baseline_kw) + " kW house"}</div>
-    <div class="note">on at ${n1(onAt, " kW")} · off at ${n1(offAt, " kW")}</div>
+  /* The whole forecast decision, in one number: how much of the day's budget
+     the roof is not expected to cover, and so has to be bought at the cheap
+     tariff tonight. Everything else the day is left to sort out for itself. */
+  const share = s.target_kwh;      /* NOT `target` above - that is the budget */
+  cards.push(card("Grid share", `
+    <div class="big ${share == null ? "state-off" : share > 0 ? "state-on" : ""}">${
+      share == null ? "—" : n1(share)}<span class="unit">kWh</span></div>
+    <div class="note tight">${share == null ? "no forecast yet"
+      : "of the " + n1(target, " kWh") + " budget, bought at night tariff"}</div>
+    <div class="note">${s.free_kwh == null ? "&nbsp;"
+      : "roof expected to cover " + n1(s.free_kwh, " kWh") + " of it"}</div>
   `));
 
   /* The day the next decision will be made on - today until its solar window
@@ -482,21 +482,18 @@ function renderChart() {
   const t1 = Math.min(horizon, now + state.hours * 3600);
   const x = (ts) => M.left + plotW * Math.max(0, Math.min(1, (ts - t0) / (t1 - t0)));
 
-  /* Everything on this chart is kW now, so there is one scale - but the spare
-     roof goes negative on a dull morning, so it cannot simply start at zero. */
-  let maxKw = 1, lowest = 0;
-  for (const r of rows) {
-    maxKw = Math.max(maxKw, (r.plug_power_w || 0) / 1000, r.spare_kw || 0);
-    if (r.spare_kw != null) lowest = Math.min(lowest, r.spare_kw);
-  }
+  /* Everything on this chart is kW and nothing on it can be negative - a
+     roof curve and a socket draw - so the scale starts at zero. */
+  let maxKw = 1;
+  for (const r of rows) maxKw = Math.max(maxKw, (r.plug_power_w || 0) / 1000);
   for (const curve of curves) {
     for (const hour of curve.hours || []) maxKw = Math.max(maxKw, hour.kw || 0);
   }
   /* Round the whole scale onto a step, so the labels are 0, 2, 4 rather than
      whatever four equal slices of an arbitrary range happen to land on. */
-  const step = niceStep((niceMax(maxKw) - Math.min(0, lowest)) / 4);
-  const minKw = Math.floor(Math.min(0, lowest) / step) * step;
-  maxKw = Math.max(minKw + step, Math.ceil(maxKw / step) * step);
+  const step = niceStep(niceMax(maxKw) / 4);
+  const minKw = 0;
+  maxKw = Math.max(step, Math.ceil(maxKw / step) * step);
   const yKw = (v) => M.top + plotH * (1 - (v - minKw) / (maxKw - minKw));
 
   const parts = [];
@@ -523,16 +520,14 @@ function renderChart() {
   parts.push(`<text x="${M.left - 7}" y="${M.top - 2}" text-anchor="end" font-size="10"
     fill="var(--ink-3)">kW</text>`);
 
-  /* the two surplus thresholds the solar window switches on - without them the
-     daytime on/off pattern looks arbitrary */
-  for (const [level, label] of [[set.solar_surplus_on_kw, "solar on"],
-                                [set.solar_surplus_off_kw, "solar off"]]) {
-    if (level == null || level > maxKw || level < minKw) continue;
-    const y = yKw(level);
+  /* What the load pulls when it runs - the one level on this chart that says
+     whether an hour of roof was enough to carry it without the grid. */
+  if (set.device_power_kw != null && set.device_power_kw <= maxKw) {
+    const y = yKw(set.device_power_kw);
     parts.push(`<line x1="${M.left}" x2="${M.left + plotW}" y1="${y}" y2="${y}"
-      stroke="var(--spare)" stroke-width="1" stroke-dasharray="3 5" opacity=".45"></line>`);
+      stroke="var(--load)" stroke-width="1" stroke-dasharray="3 5" opacity=".45"></line>`);
     parts.push(`<text x="${M.left + 5}" y="${y - 3}" font-size="9.5" fill="var(--ink-3)"
-      >${label} ${n1(level)} kW</text>`);
+      >load draws ${n1(set.device_power_kw)} kW</text>`);
   }
 
   for (const tick of timeTicks(t0, t1)) {
@@ -548,7 +543,7 @@ function renderChart() {
     fill="var(--panel-2)" stroke="var(--line)"></rect>`);
   for (const [from, to, phase] of runsOn(rows, now)) {
     parts.push(`<rect x="${x(from)}" y="${bandY}" width="${Math.max(1.5, x(to) - x(from))}"
-      height="${bandH}" rx="3" fill="${phase === "solar" ? "var(--spare)" : "var(--on)"}"></rect>`);
+      height="${bandH}" rx="3" fill="${phase === "solar" ? "var(--solar)" : "var(--on)"}"></rect>`);
   }
   parts.push(`<text x="${M.left - 7}" y="${bandY + 11}" text-anchor="end" font-size="10"
     fill="var(--ink-3)">plug</text>`);
@@ -576,14 +571,13 @@ function renderChart() {
       fill="var(--ink-3)">now</text>`);
   }
 
-  parts.push(line(rows, x, (r) => r.spare_kw == null ? null : yKw(r.spare_kw), "var(--spare)", 2));
   parts.push(line(rows, x, (r) => r.plug_power_w == null ? null
     : yKw(r.plug_power_w / 1000), "var(--load)", 1.6));
 
   /* hover furniture, moved by the pointer handler */
   parts.push(`<line id="cross" x1="0" x2="0" y1="${M.top}" y2="${M.top + plotH + bandH + 12}"
     stroke="var(--ink-3)" stroke-width="1" opacity="0"></line>`);
-  parts.push(`<circle id="cursor" r="3.5" fill="var(--spare)" opacity="0"></circle>`);
+  parts.push(`<circle id="cursor" r="3.5" fill="var(--load)" opacity="0"></circle>`);
 
   svg.innerHTML = parts.join("");
   svg.__hover = { rows, x, yKw, M, plotW, W };
@@ -687,8 +681,8 @@ function hover(event) {
   const cross = svg.querySelector("#cross");
   const cursor = svg.querySelector("#cursor");
   cross.setAttribute("x1", cx); cross.setAttribute("x2", cx); cross.setAttribute("opacity", ".5");
-  if (best.spare_kw != null) {
-    cursor.setAttribute("cx", cx); cursor.setAttribute("cy", box.yKw(best.spare_kw));
+  if (best.plug_power_w != null) {
+    cursor.setAttribute("cx", cx); cursor.setAttribute("cy", box.yKw(best.plug_power_w / 1000));
     cursor.setAttribute("opacity", "1");
   } else cursor.setAttribute("opacity", "0");
 
@@ -696,8 +690,8 @@ function hover(event) {
     <div class="when">${stamp(best.ts)}</div>
     <div class="row"><span>socket</span><span class="${best.socket_on ? "state-on" : ""}">${best.socket_on ? "ON" : "off"}</span></div>
     <div class="row"><span>drawing</span><span>${kw(best.plug_power_w)}</span></div>
-    <div class="row"><span>spare roof</span><span>${n1(best.spare_kw, " kW")}</span></div>
     <div class="row"><span>day ahead</span><span>${n1(best.pv_forecast_kwh, " kWh")}</span></div>
+    ${best.target_kwh != null ? `<div class="row"><span>grid share</span><span>${n1(best.target_kwh, " kWh")}</span></div>` : ""}
     ${best.delivered_kwh != null ? `<div class="row"><span>delivered</span><span>${n1(best.delivered_kwh, " kWh")}</span></div>` : ""}
     <div class="row"><span>window</span><span>${esc({ night: "cheap grid", solar: "free solar" }[best.phase] || "—")}</span></div>
     ${best.reason ? `<div class="reason">${esc(best.reason)}</div>` : ""}`;
@@ -721,10 +715,11 @@ function unhover() {
 const bar = (seconds, longest, colour) => seconds > 0
   ? `<i style="width:${Math.max(3, 150 * seconds / longest)}px;background:${colour}"></i>` : "";
 
-/* The hour-by-hour outlook, today and tomorrow. Everything here is derived,
-   not recorded: the roof curve is what Open-Meteo said, and spare, the gate
-   and the load's share are the same arithmetic main.py does - shown so the
-   Verdict card's "free from the day" can be checked by eye. */
+/* The hour-by-hour outlook, today and tomorrow. This is here to be looked
+   at, not decided on: the decision only ever uses the day's total. The shape
+   still matters to a person - a day that makes its 20 kWh in one sharp arc
+   feels different from one that dribbles it out - but the watcher no longer
+   cares, and the footer shows the whole of the arithmetic it does do. */
 function renderForecast(data) {
   const curves = data.forecasts && data.forecasts.length ? data.forecasts
     : data.forecast ? [data.forecast] : [];
@@ -750,23 +745,18 @@ function forecastDay(curve, set, now, sample) {
   const hours = curve.hours || [];
   if (!hours.length) return "";
 
-  const baseline = set.house_baseline_kw || 0;
-  const gate = set.solar_surplus_on_kw;
-  const cap = set.device_power_kw;
+  const house = set.house_daytime_kwh || 0;
+  const budget = set.device_daily_kwh || 0;
   const peak = Math.max(0.1, ...hours.map((hour) => hour.kw || 0));
+  /* The whole forecast decision, on the day's total and nothing else. */
+  const free = Math.min(budget, Math.max(0, (curve.pv_kwh || 0) - house));
 
-  let freeHours = 0, freeKwh = 0;
   const rows = hours.map((hour) => {
     /* A row is stamped with the END of the hour it covers, so 14:00 is the
        mean over 13:00-14:00. Label the period, never the stamp. */
     const ends = Date.parse(hour.time) / 1000;
     const starts = ends - 3600;
     const roof = hour.kw || 0;
-    const spare = roof - baseline;
-    const free = gate != null && spare >= gate;
-    const share = free ? Math.min(cap == null ? spare : cap, spare) : 0;
-    if (free) { freeHours++; freeKwh += share; }
-
     const when = ends <= now ? "past" : starts <= now ? "current" : "";
     const sky = [
       hour.cloud_cover == null ? null : "cloud " + n0(hour.cloud_cover, "%"),
@@ -778,8 +768,6 @@ function forecastDay(curve, set, now, sample) {
       <td class="day">${clock(starts)}–${clock(ends)}</td>
       <td><div class="hourbar"><i style="width:${Math.max(2, 120 * roof / peak)}px"></i>
         <span>${n1(roof, " kW")}</span></div></td>
-      <td class="num ${free ? "free" : ""}">${(spare > 0 ? "+" : "") + spare.toFixed(1)} kW</td>
-      <td class="num ${free ? "free" : ""}">${free ? n1(share, " kWh") : "—"}</td>
       <td class="num" style="color:var(--ink-2)">${esc(sky)}</td>
     </tr>`;
   }).join("");
@@ -792,17 +780,14 @@ function forecastDay(curve, set, now, sample) {
     <div class="daycap"><b>${esc(dayName(curve.day))}</b>
       <span>${esc(niceDay(curve.day))}</span><span class="spacer"></span>
       <span>${n1(curve.pv_kwh, " kWh")} · peak ${n1(curve.peak_kw, " kW")}</span></div>
-    <div class="scroller"><table style="min-width:560px">
-      <thead><tr><th>hour</th><th>roof</th><th class="num">spare</th>
-        <th class="num">to load</th><th class="num">sky</th></tr></thead>
+    <div class="scroller"><table style="min-width:360px">
+      <thead><tr><th>hour</th><th>roof</th><th class="num">sky</th></tr></thead>
       <tbody>${rows}</tbody>
       <tfoot><tr>
         <td class="day">${n1(curve.pv_kwh, " kWh")}</td>
-        <td colspan="2">${freeHours} hour${freeHours === 1 ? "" : "s"} clear
-          ${n1(gate, " kW")} spare${decided
-            ? " · grid buys " + n1(sample.target_kwh, " kWh") + " tonight" : ""}</td>
-        <td class="num free">${n1(freeKwh, " kWh")}</td>
-        <td class="num">free to the load</td>
+        <td>less ${n1(house, " kWh")} house${decided
+          ? " · grid buys " + n1(sample.target_kwh, " kWh") + " tonight" : ""}</td>
+        <td class="num"><span class="free">${n1(free, " kWh")}</span> to the load</td>
       </tr></tfoot></table></div>
   </div>`;
 }
@@ -844,16 +829,16 @@ function renderDays(days) {
     <tr>
       <td class="day">${new Date(d.day + "T12:00").toLocaleDateString([], { weekday: "short", day: "2-digit", month: "short" })}</td>
       <td><div class="daybar">
-        ${bar(d.grid_seconds, longest, "var(--on)")}${bar(d.solar_seconds, longest, "var(--spare)")}
+        ${bar(d.grid_seconds, longest, "var(--on)")}${bar(d.solar_seconds, longest, "var(--solar)")}
         <span>${duration(d.on_seconds)}</span></div></td>
       <td class="num">${d.delivered_kwh == null ? "—" : n1(d.delivered_kwh, " kWh")}</td>
-      <td class="num">${d.spare_max == null ? "—" : n1(d.spare_max, " kW")}</td>
+      <td class="num">${d.target_kwh == null ? "—" : n1(d.target_kwh, " kWh")}</td>
       <td class="num">${d.pv_forecast_kwh == null ? "—" : n1(d.pv_forecast_kwh, " kWh")}</td>
     </tr>`).join("");
   $("days").innerHTML = `<table style="min-width:520px">
     <thead><tr><th>day</th><th>socket on <span style="color:var(--on)">grid</span> /
-      <span style="color:var(--spare)">solar</span></th><th class="num">delivered</th>
-      <th class="num">best spare</th><th class="num">forecast</th></tr></thead>
+      <span style="color:var(--solar)">solar</span></th><th class="num">delivered</th>
+      <th class="num">grid share</th><th class="num">forecast</th></tr></thead>
     <tbody>${rows}</tbody></table>`;
 }
 

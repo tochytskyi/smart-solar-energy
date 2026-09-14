@@ -27,7 +27,7 @@ from urllib.parse import parse_qs, urlparse
 PAGE = Path(__file__).with_name("dashboard.html")
 
 CSV_COLUMNS = (
-    "ts", "phase", "pv_forecast_kwh", "peak_kw", "spare_kw", "cloud_cover",
+    "ts", "phase", "pv_forecast_kwh", "peak_kw", "cloud_cover",
     "rain_mm", "plug_power_w", "delivered_kwh", "free_kwh", "target_kwh",
     "wanted", "socket_on", "reason",
 )

@@ -46,9 +46,10 @@ import tapo_client
 # .env - and the credentials in it - out of the whole suite.
 tapo_client.load_env = lambda *args, **kwargs: None
 
-# The watcher under test. Round numbers on purpose: an 8 kWh house across an
-# eight-hour solar window is exactly 1.0 kW the roof owes the house before the
-# load sees anything, so every surplus in the tests is "forecast kW minus one".
+# The watcher under test. Round numbers on purpose: a 6 kWh/day load and an
+# 8 kWh house, so a day's forecast total minus 8 is what the load gets free,
+# and the night buys 6 minus that - every expected number here is one
+# subtraction from the day's kWh.
 ENV = {
     "PLUG_B_IP": "10.0.0.5",
     "CHECK_INTERVAL": "60",
@@ -59,8 +60,6 @@ ENV = {
     "SOLAR_END": "18:00",
 
     "BOOST_STRATEGY": "forecast",
-    "SOLAR_SURPLUS_ON_KW": "2.0",
-    "SOLAR_SURPLUS_OFF_KW": "1.0",
 
     "DEVICE_DAILY_KWH": "6",
     "DEVICE_POWER_KW": "2.0",

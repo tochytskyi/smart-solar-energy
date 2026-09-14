@@ -26,6 +26,8 @@ def decode_nickname(value):
 
 
 async def check(api, ip):
+    """(reachable?, kWh through this socket today). The meter reading is what
+    both windows decide against, so it is carried out to check_decision."""
     print("=" * 60)
     print("Plug %s" % ip)
     print("=" * 60)
@@ -33,7 +35,7 @@ async def check(api, ip):
     if not is_online(ip):
         print("  UNREACHABLE - no ping reply. Check the IP, or grant this app the")
         print("  macOS Local Network permission (Privacy & Security).")
-        return False
+        return False, None
 
     print("  online, authenticating...")
     device = info = None
@@ -56,7 +58,7 @@ async def check(api, ip):
             print("      Third-Party Compatibility > enable it (per plug).")
         else:
             print("  Check TAPO_EMAIL / TAPO_PASSWORD (must be the TP-Link cloud account).")
-        return False
+        return False, None
 
     print("  name       : %s" % decode_nickname(info.get("nickname")))
     print("  model      : %s (hw %s, fw %s)" % (
@@ -67,6 +69,7 @@ async def check(api, ip):
     print("  wifi rssi  : %s dBm (level %s)" % (info.get("rssi"), info.get("signal_level")))
     print("  overheated : %s" % info.get("overheated"))
 
+    delivered = None
     if hasattr(device, "get_current_power"):
         try:
             power = await device.get_current_power()
@@ -75,17 +78,19 @@ async def check(api, ip):
             u = usage.to_dict()
             print("  energy     : today %s Wh, this month %s Wh" % (
                 u.get("today_energy"), u.get("month_energy")))
+            today_wh = u.get("today_energy")
+            delivered = None if today_wh is None else float(today_wh) / 1000.0
         except Exception:
             pass  # P100 and some models have no energy monitoring
 
-    return True
+    return True, delivered
 
 
 def check_forecast():
     """Print the solar outlook for the window the watcher judges, or why not.
 
-    The surplus column is the whole daytime decision: what is left of each
-    hour once the rest of the house has been served out of it.
+    The hourly rows are here to be looked at, not decided on: only the day's
+    total reaches the decision, and only to size the night's grid buy.
     """
     print("=" * 60)
     print("Solar outlook")
@@ -115,21 +120,19 @@ def check_forecast():
         config("PV_TILT", "30", required=False),
         config("PV_AZIMUTH", "180", required=False)))
     for row in outlook["hours"]:
-        spare = watcher.spare_kw(row["kw"])
-        print("    %s  %4.0f W/m2 -> %5.2f kW   spare %+5.2f kW %-4s cloud %3s%%   rain %4.1f mm (%s%%)" % (
-            row["time"].strftime("%H:%M"), row["gti"], row["kw"], spare,
-            "ON" if spare >= watcher.SOLAR_SURPLUS_ON_KW else "",
+        print("    %s  %4.0f W/m2 -> %5.2f kW   cloud %3s%%   rain %4.1f mm (%s%%)" % (
+            row["time"].strftime("%H:%M"), row["gti"], row["kw"],
             row["cloud_cover"], row["precipitation"], row["precipitation_probability"]))
     wet = forecast.wet_hour_fraction(outlook, watcher.RAIN_MM, watcher.RAIN_PROBABILITY)
     print("  expected   : %.1f kWh, peak %.1f kW" % (outlook["pv_kwh"], outlook["peak_kw"]))
-    print("  house first: %.1f kWh over the window = %.2f kW an hour" % (
-        watcher.HOUSE_DAYTIME_KWH, watcher.HOUSE_BASELINE_KW))
+    print("  house first: %.1f kWh of that before the load sees any"
+          % watcher.HOUSE_DAYTIME_KWH)
     print("  weather    : mean cloud %.0f%%, %.1f mm rain, %.0f%% of hours wet" % (
         outlook["cloud_cover"] or 0, outlook["rain_mm"], wet * 100))
     return outlook, wet
 
 
-def check_decision(forecast_result):
+def check_decision(forecast_result, delivered=None):
     """Print what the watcher would do with these numbers right now."""
     print("=" * 60)
     print("Decision")
@@ -143,27 +146,26 @@ def check_decision(forecast_result):
     print("  strategy   : %s" % watcher.BOOST_STRATEGY)
 
     outlook, wet = forecast_result if forecast_result else (None, 0.0)
-    spare = None
-    if outlook is not None:
-        row = solar_forecast.hour_row(outlook, now)
-        spare = None if row is None else watcher.spare_kw(row["kw"])
-        print("  spare now  : %s" % (
-            "-" if spare is None else "%.2f kW (on at %.1f, off at %.1f)" % (
-                spare, watcher.SOLAR_SURPLUS_ON_KW, watcher.SOLAR_SURPLUS_OFF_KW)))
+    print("  delivered  : %s" % (
+        "meter unreadable" if delivered is None
+        else "%.2f of %.1f kWh today" % (delivered, watcher.DEVICE_DAILY_KWH)))
     if outlook is not None and watcher.BOOST_STRATEGY == "forecast":
         free = watcher.free_solar_kwh(outlook)
         target = watcher.night_target_kwh(outlook)
-        print("  free today : %.1f kWh of the day's %.1f kWh clears the house and"
-              " reaches the load" % (free, outlook["pv_kwh"]))
-        print("  load needs : %.1f kWh -> buy %.1f kWh from the grid tonight"
-              % (watcher.DEVICE_DAILY_KWH, target))
+        print("  free today : %.1f kWh of the day's %.1f kWh is left for the load"
+              " once the house has had its %.1f" % (
+                  free, outlook["pv_kwh"], watcher.HOUSE_DAYTIME_KWH))
+        print("  load needs : %.1f kWh -> buy %.1f kWh from the grid tonight,"
+              " top up the rest from %s" % (
+                  watcher.DEVICE_DAILY_KWH, target,
+                  watcher.SOLAR_START.strftime("%H:%M")))
 
     if night:
-        wanted, reason = watcher.decide_night(outlook, wet, None)
+        wanted, reason = watcher.decide_night(outlook, wet, delivered)
     elif solar:
-        wanted, reason = watcher.decide_solar(spare, None, False)
+        wanted, reason = watcher.decide_solar(delivered)
     else:
-        wanted, reason = watcher.decide_night(outlook, wet, None)
+        wanted, reason = watcher.decide_night(outlook, wet, delivered)
     verdict = "SOCKET ON" if wanted else "socket off"
     if night or solar:
         print("  verdict    : %s - %s" % (verdict, reason))
@@ -178,21 +180,23 @@ async def main():
 
     api = client()
     results = [await check(api, ip) for ip in ips]
+    reachable = [ok for ok, _ in results]
+    delivered = next((kwh for _, kwh in results if kwh is not None), None)
 
     # Named IPs mean "look at these plugs" and nothing else.
     if explicit_ips:
         print()
-        print("%d/%d plug(s) reachable." % (sum(results), len(results)))
-        return 0 if all(results) else 1
+        print("%d/%d plug(s) reachable." % (sum(reachable), len(reachable)))
+        return 0 if all(reachable) else 1
 
     print()
     forecast_result = await asyncio.to_thread(check_forecast)
     print()
-    check_decision(forecast_result)
+    check_decision(forecast_result, delivered)
 
     print()
-    print("%d/%d plug(s) reachable." % (sum(results), len(results)))
-    return 0 if all(results) and forecast_result is not None else 1
+    print("%d/%d plug(s) reachable." % (sum(reachable), len(reachable)))
+    return 0 if all(reachable) and forecast_result is not None else 1
 
 
 if __name__ == "__main__":

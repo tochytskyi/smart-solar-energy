@@ -232,20 +232,6 @@ def covers(stamp):
     return stamp - timedelta(hours=1)
 
 
-def hour_row(outlook, moment):
-    """The outlook's row for the hour `moment` falls in, or None.
-
-    The decision inside the solar window needs what the roof is expected to
-    make right now, and it has to be the same curve the night decision added
-    up and the page draws - so it is read back out of the outlook rather than
-    fetched again.
-    """
-    for row in outlook["hours"]:
-        if covers(row["time"]) <= moment < row["time"]:
-            return row
-    return None
-
-
 def _mean(values):
     numbers = [value for value in values if value is not None]
     return sum(numbers) / float(len(numbers)) if numbers else None

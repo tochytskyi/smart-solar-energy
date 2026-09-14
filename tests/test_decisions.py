@@ -1,10 +1,10 @@
 """The call itself: what main.py decides, and what it does with the answer.
 
 The constants are the ones tests/__init__.py put in the environment: 6.0
-kWh/day owed to the load, which draws 2.0 kW, and an 8.0 kWh house spread
-across an eight-hour solar window - so the house takes exactly 1.0 kW off
-every forecast hour before the load sees any of it, and the surplus in every
-test below is simply "that hour's kW, minus one".
+kWh/day owed to the load and an 8.0 kWh house. Only the day's forecast TOTAL
+reaches a decision, so every expected number below is one subtraction: what
+the day makes, less the 8.0 the house takes, is what the load gets free, and
+the night buys whatever is left of the 6.0.
 """
 
 import contextlib
@@ -33,70 +33,64 @@ def quiet():
 def outlook(*kws):
     """An outlook built from one forecast kW figure per hour of the window.
 
-    The house takes 1.0 kW of each, so outlook(3.0) is one hour with 2.0 kW
-    spare - exactly on the ON threshold.
+    Only the day's total is ever read; the hours are carried because a real
+    outlook has them and the page draws them.
     """
     return {"pv_kwh": sum(kws), "hours": [{"kw": kw} for kw in kws]}
 
 
-class SpareRoof(unittest.TestCase):
-    """spare_kw: the roof the rest of the house is not already taking."""
-
-    def test_the_house_is_served_out_of_the_hour_first(self):
-        self.assertAlmostEqual(main.spare_kw(3.0), 2.0)
-
-    def test_an_hour_the_house_outgrows_goes_negative(self):
-        self.assertAlmostEqual(main.spare_kw(0.4), -0.6)
-
-
 class FreeSolar(unittest.TestCase):
-    """free_solar_kwh: what today can give away before the grid is touched."""
+    """free_solar_kwh: what today gives the load before the grid is touched."""
 
-    def test_it_counts_only_the_hours_that_clear_the_on_threshold(self):
-        # 4.0 kW leaves 3.0 spare, which is over the 2.0 threshold, but the
-        # load can only swallow its own 2.0 kW in the hour.
-        self.assertAlmostEqual(main.free_solar_kwh(outlook(4.0, 4.0, 4.0)), 6.0)
+    def test_the_house_is_taken_out_of_the_day_first(self):
+        # 12 kWh on the roof, 8 to the house, 4 left for the load.
+        self.assertAlmostEqual(main.free_solar_kwh(outlook(4.0, 4.0, 4.0)), 4.0)
 
-    def test_the_on_threshold_is_inclusive(self):
-        self.assertAlmostEqual(main.free_solar_kwh(outlook(3.0, 3.0)), 4.0)
+    def test_a_day_the_house_swallows_whole_gives_the_load_nothing(self):
+        self.assertAlmostEqual(main.free_solar_kwh(outlook(3.0, 3.0)), 0.0)
 
-    def test_an_hour_just_under_the_threshold_gives_nothing(self):
-        # 1.9 kW spare would not switch the socket on, so it must not be
-        # counted here either, or the night under-buys on a promise the
-        # afternoon never keeps.
-        self.assertAlmostEqual(main.free_solar_kwh(outlook(2.9, 2.9)), 0.0)
+    def test_it_never_goes_negative(self):
+        # A day that does not even cover the house is still zero to the load,
+        # never a debt carried into the night's arithmetic.
+        self.assertAlmostEqual(main.free_solar_kwh(outlook(0.5)), 0.0)
 
-    def test_a_thin_day_hands_the_load_nothing_however_long_it_lasts(self):
-        # 8 hours x 1.5 kW is 12 kWh on the roof and not one of them free.
-        self.assertAlmostEqual(main.free_solar_kwh(outlook(*([1.5] * 8))), 0.0)
+    def test_it_never_promises_more_than_the_load_can_take(self):
+        # 40 kWh on the roof still only ever fills a 6 kWh budget.
+        self.assertAlmostEqual(main.free_solar_kwh(outlook(*([5.0] * 8))), 6.0)
 
-    def test_a_dark_hour_is_never_a_negative_contribution(self):
-        self.assertAlmostEqual(main.free_solar_kwh(outlook(0.0, 4.0)), 2.0)
+    def test_how_the_day_is_shaped_makes_no_difference(self):
+        # The same 12 kWh, dribbled out or in one arc. The hourly version
+        # answered these two differently; this one cannot.
+        flat = main.free_solar_kwh(outlook(*([1.5] * 8)))
+        peaked = main.free_solar_kwh(outlook(0.2, 0.5, 1.2, 3.3, 4.0, 1.8, 0.7, 0.3))
+        self.assertAlmostEqual(flat, 4.0)
+        self.assertAlmostEqual(peaked, 4.0)
 
 
 class NightTarget(unittest.TestCase):
     """night_target_kwh: only the shortfall, and never more than a day's worth."""
 
     def test_a_day_that_covers_the_load_buys_nothing(self):
-        self.assertAlmostEqual(main.night_target_kwh(outlook(4.0, 4.0, 4.0)), 0.0)
+        # 40 kWh roof, 8 to the house, the load's 6 covered outright.
+        self.assertAlmostEqual(main.night_target_kwh(outlook(*([5.0] * 8))), 0.0)
 
     def test_only_the_part_the_sun_will_not_manage(self):
-        # 4.0 kWh free of the 6.0 owed -> buy 2.0.
-        self.assertAlmostEqual(main.night_target_kwh(outlook(3.0, 3.0)), 2.0)
+        # 12 kWh roof - 8 house = 4.0 kWh free of the 6.0 owed -> buy 2.0.
+        self.assertAlmostEqual(main.night_target_kwh(outlook(4.0, 4.0, 4.0)), 2.0)
 
     def test_never_more_than_the_daily_budget(self):
         self.assertAlmostEqual(main.night_target_kwh(outlook(0.0, 0.0)), 6.0)
 
-    def test_a_day_with_more_than_enough_still_buys_nothing(self):
-        self.assertAlmostEqual(main.night_target_kwh(outlook(*([5.0] * 8))), 0.0)
+    def test_a_day_that_only_feeds_the_house_buys_the_lot(self):
+        self.assertAlmostEqual(main.night_target_kwh(outlook(3.0, 3.0)), 6.0)
 
 
 class NightDecision(unittest.TestCase):
     """decide_night under the forecast strategy."""
 
-    # Two hours at 3.0 kW: 4.0 kWh free, so 2.0 kWh to buy.
-    SHORTFALL = (3.0, 3.0)
-    PLENTY = (4.0, 4.0, 4.0)
+    # 12 kWh on the roof less the 8 kWh house: 4.0 kWh free, 2.0 kWh to buy.
+    SHORTFALL = (4.0, 4.0, 4.0)
+    PLENTY = (5.0,) * 8
 
     def decide(self, kws=SHORTFALL, wet=0.0, delivered=0.0):
         return main.decide_night(None if kws is None else outlook(*kws), wet, delivered)
@@ -147,7 +141,7 @@ class NightDecision(unittest.TestCase):
 
     def test_the_reason_carries_the_whole_sum(self):
         _, why = self.decide()
-        self.assertIn("6.0 kWh sun", why)         # two hours at 3.0 kW
+        self.assertIn("12.0 kWh sun", why)        # three hours at 4.0 kW
         self.assertIn("house takes 8.0", why)
         self.assertIn("4.0 kWh reaches the load free", why)
 
@@ -186,60 +180,43 @@ class NightDecisionRainStrategy(unittest.TestCase):
 
 
 class SolarDecision(unittest.TestCase):
-    """decide_solar: run on spare roof, with hysteresis so a grazing hour
-    does not chatter."""
+    """decide_solar: top up until the meter says the day is done.
+
+    No forecast and no threshold reach this window. It runs from SOLAR_START
+    and the meter is the only thing that stops it.
+    """
+
+    def test_an_empty_meter_runs_the_load(self):
+        on, why = main.decide_solar(0.0)
+        self.assertTrue(on)
+        self.assertIn("topping up", why)
 
     def test_a_spent_budget_ends_the_day(self):
-        on, why = main.decide_solar(4.0, 6.0, True)
+        on, why = main.decide_solar(6.0)
         self.assertFalse(on)
         self.assertIn("already had", why)
 
-    def test_a_spent_budget_outranks_a_missing_forecast(self):
-        on, why = main.decide_solar(None, 6.0, True)
+    def test_the_budget_is_inclusive(self):
+        on, _ = main.decide_solar(6.0)
         self.assertFalse(on)
-        self.assertIn("already had", why)
 
-    def test_no_forecast_for_this_hour_holds_off(self):
-        on, why = main.decide_solar(None, 0.0, True)
-        self.assertFalse(on)
-        self.assertIn("no forecast", why)
-
-    def test_a_roof_ahead_of_the_house_runs_the_load(self):
-        on, why = main.decide_solar(3.0, 0.0, False)
+    def test_part_way_through_it_keeps_going(self):
+        on, why = main.decide_solar(5.9)
         self.assertTrue(on)
-        self.assertIn("heating on free solar", why)
+        self.assertIn("5.9 of 6.0 kWh", why)
 
-    def test_the_on_threshold_is_inclusive(self):
-        on, _ = main.decide_solar(2.0, 0.0, False)
-        self.assertTrue(on)
+    def test_what_the_night_already_bought_counts_against_the_day(self):
+        # One meter, two windows: 4.0 kWh bought at night leaves 2.0 to top
+        # up, and the socket stops the moment the meter says 6.0.
+        self.assertTrue(main.decide_solar(4.0)[0])
+        self.assertFalse(main.decide_solar(6.0)[0])
 
-    def test_a_roof_the_house_needs_stops_the_load(self):
-        on, why = main.decide_solar(0.5, 0.0, True)
+    def test_an_unreadable_meter_holds_off(self):
+        # The meter is the only brake on this window now. Without it the
+        # socket would heat until sunset, so unknown has to mean off.
+        on, why = main.decide_solar(None)
         self.assertFalse(on)
-        self.assertIn("leaving the roof to the house", why)
-
-    def test_the_off_threshold_is_inclusive(self):
-        on, _ = main.decide_solar(1.0, 0.0, True)
-        self.assertFalse(on)
-
-    def test_a_negative_surplus_stops_the_load(self):
-        on, _ = main.decide_solar(-0.6, 0.0, True)
-        self.assertFalse(on)
-
-    def test_inside_the_band_a_running_socket_keeps_running(self):
-        on, why = main.decide_solar(1.5, 0.0, True)
-        self.assertTrue(on)
-        self.assertIn("holding", why)
-
-    def test_inside_the_band_a_stopped_socket_stays_stopped(self):
-        on, _ = main.decide_solar(1.5, 0.0, False)
-        self.assertFalse(on)
-
-    def test_inside_the_band_an_unknown_relay_stays_off(self):
-        # plug.state is None after a failed switch: the safe reading of
-        # "leave it as it is" is then "leave it off".
-        on, _ = main.decide_solar(1.5, 0.0, None)
-        self.assertFalse(on)
+        self.assertIn("no meter reading", why)
 
 
 class NoDailyBudget(unittest.TestCase):
@@ -247,7 +224,14 @@ class NoDailyBudget(unittest.TestCase):
 
     def test_the_solar_window_ignores_the_meter(self):
         with constants(DEVICE_DAILY_KWH=0.0):
-            on, _ = main.decide_solar(3.0, 99.0, False)
+            on, _ = main.decide_solar(99.0)
+        self.assertTrue(on)
+
+    def test_the_solar_window_runs_without_a_meter_at_all(self):
+        # A P100 has no meter. With no budget to enforce there is nothing to
+        # read, so the window itself is the only limit.
+        with constants(DEVICE_DAILY_KWH=0.0):
+            on, _ = main.decide_solar(None)
         self.assertTrue(on)
 
     def test_the_night_window_buys_nothing(self):
@@ -441,8 +425,8 @@ class SampleRecording(unittest.TestCase):
         # The numbers in the reason are the interesting part of a quiet hour.
         book = FakeLogbook()
         recorder = main.Recorder(book, 3600)
-        recorder.record(socket_on=False, wanted=False, reason="battery 66% - holding")
-        recorder.record(socket_on=False, wanted=False, reason="battery 64% - no spare solar")
+        recorder.record(socket_on=False, wanted=False, reason="10.0 kWh sun - waiting")
+        recorder.record(socket_on=False, wanted=False, reason="11.0 kWh sun - waiting")
         self.assertEqual(len(book.samples), 2)
 
     def test_the_quiet_state_is_re_recorded_when_the_interval_passes(self):
@@ -454,8 +438,8 @@ class SampleRecording(unittest.TestCase):
 
     def test_every_field_reaches_the_logbook(self):
         book = FakeLogbook()
-        main.Recorder(book, 3600).record(spare_kw=2.4, free_kwh=2.0, reason="x")
-        self.assertEqual(book.samples[0]["spare_kw"], 2.4)
+        main.Recorder(book, 3600).record(target_kwh=2.4, free_kwh=2.0, reason="x")
+        self.assertEqual(book.samples[0]["target_kwh"], 2.4)
         self.assertEqual(book.samples[0]["free_kwh"], 2.0)
 
     def test_the_record_is_pruned_once_a_day(self):

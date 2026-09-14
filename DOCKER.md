@@ -76,23 +76,22 @@ http://<pi-address>:8080
 `network_mode: host` means there is no port to map - the page is simply on the
 Pi's own address. It shows:
 
-- **the state now** - socket, what it is drawing, the spare roof this hour, the
-  forecast for the day the next decision will use (today until its solar window
-  is spent, tomorrow from then on), and the verdict sentence with the kWh
-  arithmetic behind it;
+- **the state now** - socket, what it is drawing, how much of the day's budget
+  the night has to buy, the forecast for the day the next decision will use
+  (today until its solar window is spent, tomorrow from then on), and the
+  verdict sentence with the kWh arithmetic behind it;
 - **a chart** over 6 hours to 30 days, all in kW - the forecast curves, the
-  spare roof left after the house, the socket's own measured draw, both windows
+  socket's own measured draw against the level the load pulls, both windows
   shaded, and a band underneath showing exactly when the socket was on and on
   which tariff. It reaches past `now` - marked with a line - to show the hours
   still to come, never giving the future more than half the width;
 - **nights** - per day, how long the socket ran on grid versus on solar, what
-  the plug's meter recorded, and the best spare hour of the day;
+  the plug's meter recorded, and the grid share that day was sized for;
 - **the forecast, hour by hour, for today and tomorrow** - what the roof should
-  make each hour, what is left once the house has taken its share, which hours
-  clear `SOLAR_SURPLUS_ON_KW`, and how much of the load's budget each of those
-  can carry. The total at the foot of each day is the same "free from the day"
-  the verdict is built on, so the arithmetic can be checked by eye. Open-Meteo
-  is asked for two days at a time, so the second one costs nothing extra;
+  make each hour, and the sky behind it. The decision does not read these rows;
+  the foot of each day carries the whole of the arithmetic it does do, so the
+  verdict can be checked by eye. Open-Meteo is asked for two days at a time, so
+  the second one costs nothing extra;
 - **the log** - the same lines `docker compose logs` shows, kept for
   `HISTORY_RETENTION_DAYS`, filterable by level and text.
 
@@ -151,66 +150,65 @@ budget** - whatever the night buys, the afternoon does not repeat.
 | Window | Source | Runs when |
 |---|---|---|
 | `NIGHT_START`-`NIGHT_END` (00:00-07:00) | cheap grid | today's sun will not cover the load |
-| `SOLAR_START`-`SOLAR_END` (10:00-18:00) | free solar | the roof is ahead of the house |
+| `SOLAR_START`-`SOLAR_END` (10:00-18:00) | roof first, grid for the rest | the budget is not full yet |
 | anything else | - | never |
 
 **Two numbers decide all of it**: the plug's own meter, and the Open-Meteo
 forecast for this roof. Nothing is read from the inverter - no cloud account,
 no battery charge, no API key anywhere in the loop.
 
-### The spare roof
+### The arithmetic, in full
 
-Both windows are built on the same per-hour number:
+One number out of the forecast - what the roof should make over the whole of
+`SOLAR_START`-`SOLAR_END` - and one number off the plug's meter. That is all
+of it:
 
 ```
-spare(hour) = forecast kW for that hour - HOUSE_BASELINE_KW
-
-HOUSE_BASELINE_KW = HOUSE_DAYTIME_KWH / length of SOLAR_START-SOLAR_END
+free        = clamp(forecast kWh for the day - HOUSE_DAYTIME_KWH, 0 .. DEVICE_DAILY_KWH)
+buy tonight = DEVICE_DAILY_KWH - free
 ```
 
-8 kWh of house across a 10:00-18:00 window is 1.0 kW the roof owes the house
-before the load sees any of it. An hour making 3 kW therefore has 2 kW spare;
-an hour making 0.4 kW has none at all, and goes negative.
-
-### The day: take the surplus
-
-Inside the solar window the socket follows that spare figure, with hysteresis:
-
-| spare this hour | Socket |
-|---|---|
-| at or above `SOLAR_SURPLUS_ON_KW` (2.0) | **on** - the roof carries the load outright, this is free |
-| between | held wherever it was |
-| at or below `SOLAR_SURPLUS_OFF_KW` (1.0) | **off** - the house needs the roof |
-
-Set `SOLAR_SURPLUS_ON_KW` to roughly what the load draws (`DEVICE_POWER_KW`):
-that is the point at which switching it on costs the rest of the house nothing.
-The band below it is what stops an hour grazing the threshold from making the
-relay chatter.
-
-The forecast is an hourly curve, not an instantaneous reading, which is exactly
-why it works here - it is already smooth, so a passing cloud or a kettle never
-reaches the relay at all.
+`HOUSE_DAYTIME_KWH` is what the rest of the house takes out of the roof across
+that window - including whatever the battery charges from solar, because that
+is roof the load cannot have either. It is the one figure here that is a
+guess; everything else is measured or forecast.
 
 ### The night: buy only the shortfall
 
-First, how much the load gets for nothing today - hour by hour, counting only
-the hours the daytime rule above will actually switch on for, and only as much
-of each as the load can swallow:
+Inside `NIGHT_START`-`NIGHT_END` the socket runs until the plug's meter says
+`buy tonight` kWh have gone through it, then stops - mid-window, not at the
+end. `buy tonight == 0` means the day covers the load outright and the socket
+never comes on at all.
 
-```
-free = sum over the solar window of
-         min(DEVICE_POWER_KW, spare(hour))     for hours where spare >= SOLAR_SURPLUS_ON_KW
-```
+The forecast is read fresh every pass, so a revision during the night moves
+the target under a socket that is already running.
 
-Then the grid is asked for the remainder, and nothing more:
+### The day: top up whatever is left
 
-```
-buy tonight = clamp(DEVICE_DAILY_KWH - free, 0 .. DEVICE_DAILY_KWH)
-```
+From `SOLAR_START` the socket simply runs until the meter reads
+`DEVICE_DAILY_KWH`, and then stops. No forecast, no threshold, no hysteresis:
+whatever the roof is making goes into the load first and the grid covers the
+rest.
 
-`buy tonight == 0` means the day covers it outright and the socket stays off all
-night. If the sun will hand over 4 of the 6 kWh, the grid is asked for 2, not 6 -
-the socket switches off mid-window once the plug's meter says that share is in.
+Because both windows read the same meter, the night's purchase counts against
+this one. A night that bought 2 of the 6 kWh leaves the day to find 4.
+
+**The meter is the only brake on this window.** If it cannot be read the
+socket is held off rather than run blind - the forecast used to be a second
+opinion here and no longer is.
+
+### Why the day total and not the hourly curve
+
+The hourly version was here and it was worse. It predicted which individual
+hours would be sunny enough to carry the load outright, ran only in those, and
+sized the night's buy from the same count. On a genuinely overcast day no hour
+ever cleared the bar, so the load was promised nothing, bought nothing, and
+ended the day cold.
+
+The day total cannot make that mistake. It can still be wrong - a day that
+comes in under forecast leaves the top-up window importing at the day tariff -
+but the failure is a slightly larger bill, not a cold load. That is the right
+way round.
 
 ### Which day it is judging
 
@@ -220,12 +218,13 @@ tomorrow's curve and the buy that tonight's window intends to make, not the day
 that has just finished. Inside the night window nothing changes: a 00:00-07:00
 window is judging the day it ends on either way.
 
-Counting the hours rather than the daily total is the point. A washed-out day
-dribbling 12 kWh out at 1.5 kW never clears the threshold and hands the load
-**nothing**, while the same 12 kWh in a sharp arc covers it twice over. A single
-daily figure cannot tell those apart, and the night would buy the wrong amount
-on both. It also keeps the two windows honest with each other: the night is
-predicting exactly what the afternoon is going to do, off the same curve.
+### A night short enough to miss
+
+`NIGHT_START`-`NIGHT_END` can only deliver `hours x DEVICE_POWER_KW`. A three
+hour window and a 2 kW load is 6 kWh, so a 6 kWh budget has no slack at all
+and anything above it cannot be bought at the cheap tariff however bad the
+forecast. The watcher logs a `warn` at startup when the sums do not fit; the
+day window then quietly makes up the difference at the day tariff.
 
 ### Deciding the forecast: `BOOST_STRATEGY`
 
@@ -275,20 +274,22 @@ decision is close, so they are the sample worth having.
 docker compose run --rm tapo-watcher check.py
 ```
 
-prints the socket, the hour-by-hour forecast with the spare column and which
-hours clear the threshold, and the verdict with every term of the arithmetic
-shown - including how many kWh it intends to buy tonight. Run it at any hour.
+prints the socket and its meter, the hour-by-hour forecast, and the verdict
+with every term of the arithmetic shown - including how many kWh it intends to
+buy tonight. Run it at any hour.
 
 ### Three things to get right
 
 - **`HOUSE_DAYTIME_KWH` is the one guessed number.** It ships at 8 kWh. Take a
   few days of daytime consumption from your inverter's app, subtract this
-  device, and put the real figure in. Too low and the watcher is over-optimistic
-  about solar and skips boosts it should have taken.
+  device, and add whatever the battery charges from solar - that is roof the
+  load cannot have either. Too low and the watcher is over-optimistic about
+  solar and under-buys at the cheap tariff, leaving the day window to make up
+  the difference at the expensive one.
 - **`DEVICE_POWER_KW` should be measured, not guessed.** `check.py` prints the
-  socket's live draw - run it while the device is heating. It is what turns
-  "hours of spare sun" into kWh, so a wrong one skews the night's grid buy in
-  proportion.
+  socket's live draw - run it while the device is heating. It no longer enters
+  the arithmetic, but it is what decides whether the cheap window is long
+  enough to deliver the budget at all.
 - **`TZ` must match the site.** Every window here is naive local time. A Pi left
   on UTC would shift the night window and the forecast hours apart; the watcher
   warns when its clock disagrees with the zone Open-Meteo answered in, but
@@ -314,11 +315,11 @@ the inverter.
   and the app reads plain environment variables at runtime.
 - `tapo` ships prebuilt manylinux wheels for `aarch64` and `armv7l`, so no Rust
   toolchain and no compilation on the Pi.
-- **Upgrading from a build that read the inverter**: nothing to do. The retired
-  `soc` and power-flow columns stay in `data/history.db` - migration only ever
-  adds - and simply go NULL from the first pass onward, while the new
-  `spare_kw` and `plug_power_w` columns appear on restart. The `DEYE_*` keys in
-  `.env` are ignored and can be deleted.
+- **Upgrading from an older build**: nothing to do. Retired columns - `soc`
+  and the inverter power flows, and now `spare_kw` - stay in `data/history.db`
+  because migration only ever adds, and simply go NULL from the first pass
+  onward. Retired `.env` keys (`DEYE_*`, `SOLAR_SURPLUS_ON_KW`,
+  `SOLAR_SURPLUS_OFF_KW`) are ignored and can be deleted.
 - Set `TZ` in `.env` if you want the log timestamps in your local time.
 
 ## Building locally instead of pulling
