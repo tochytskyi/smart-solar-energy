@@ -124,6 +124,8 @@ class Plug:
         self._ip = ip
         self._device = None
         self._state = None      # last state we successfully commanded
+        self._read_failed = set()   # reads already reported broken, so we say it once
+        self._announced = False     # whether the first connection has been logged
 
     @property
     def state(self):
@@ -132,7 +134,12 @@ class Plug:
 
     async def _connect(self):
         self._device = await self._api.p110(self._ip)
-        log("connected to plug at %s" % self._ip, category="plug")
+        # Said once. _read drops the handle and reconnects on every pass while
+        # the plug is unwell, and a line a minute here would bury the warning
+        # that actually matters. Coming back is reported by _read instead.
+        if not self._announced:
+            self._announced = True
+            log("connected to plug at %s" % self._ip, category="plug")
         return self._device
 
     async def set_state(self, on):
@@ -170,20 +177,49 @@ class Plug:
                 await asyncio.sleep(2)
         return False
 
+    async def _read(self, call, what):
+        """One read off the plug, retried once on a fresh session, or None.
+
+        The retry is the whole point. These plugs expire their session, and a
+        read that gave up after one failure would never recover: the stale
+        handle is kept, so every following pass fails the same way. set_state
+        has always cleared it and tried again; the meter has to as well, and
+        it matters more now - the daytime window switches on the meter and
+        nothing else, so a socket that never gets a reading never comes on.
+        """
+        for attempt in (1, 2):
+            try:
+                device = self._device or await self._connect()
+                value = await getattr(device, call)()
+            except Exception as exc:
+                self._device = None         # force a fresh handshake next time
+                if attempt == 2:
+                    # Once per outage, not once a minute: this runs every pass.
+                    if call not in self._read_failed:
+                        self._read_failed.add(call)
+                        log("cannot read the %s: %s" % (what, type(exc).__name__),
+                            "warn", "plug")
+                    return None
+                await asyncio.sleep(1)
+                continue
+            if call in self._read_failed:
+                self._read_failed.discard(call)
+                log("%s readable again" % what, category="plug")
+            return value.to_dict()
+        return None
+
     async def energy_today_kwh(self):
         """Energy through this socket since midnight, or None if unavailable.
 
-        The night window starts at midnight, so the plug's own daily counter
-        measures exactly what this program has put into the device tonight.
-        This is the single daily budget both windows spend against.
+        The plug's daily counter resets at its own midnight, so it measures
+        exactly what has gone into the device today. This is the single daily
+        budget both windows spend against.
         """
-        try:
-            device = self._device or await self._connect()
-            usage = await device.get_energy_usage()
-            today_wh = usage.to_dict().get("today_energy")
-            return None if today_wh is None else float(today_wh) / 1000.0
-        except Exception:
-            return None     # P100 and friends have no meter; never block on this
+        usage = await self._read("get_energy_usage", "meter")
+        if usage is None:
+            return None
+        today_wh = usage.get("today_energy")
+        return None if today_wh is None else float(today_wh) / 1000.0
 
     async def power_w(self):
         """What the socket is drawing this second, or None if unavailable.
@@ -192,12 +228,8 @@ class Plug:
         verdict asked, and it is the only measured power the page has now that
         the inverter is not read.
         """
-        try:
-            device = self._device or await self._connect()
-            power = await device.get_current_power()
-            return power.to_dict().get("current_power")
-        except Exception:
-            return None
+        power = await self._read("get_current_power", "power meter")
+        return None if power is None else power.get("current_power")
 
 
 def free_solar_kwh(outlook):

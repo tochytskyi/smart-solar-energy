@@ -251,11 +251,13 @@ class FakeDevice:
     energy=None is a plug with no meter at all, like a P100.
     """
 
-    def __init__(self, failures=0, energy=METER, power=2410):
+    def __init__(self, failures=0, energy=METER, power=2410, meter_failures=0):
         self.failures = failures
         self.energy = energy
         self.power = power
+        self.meter_failures = meter_failures     # e.g. an expired session
         self.calls = []
+        self.reads = 0
 
     async def on(self):
         self._switch(True)
@@ -270,6 +272,10 @@ class FakeDevice:
             raise RuntimeError("DeviceError: HostUnreachable")
 
     async def get_energy_usage(self):
+        self.reads += 1
+        if self.meter_failures:
+            self.meter_failures -= 1
+            raise RuntimeError("SessionTimeout")
         if self.energy is None:
             raise RuntimeError("this model has no meter")
         return types.SimpleNamespace(to_dict=lambda: dict(self.energy))
@@ -371,7 +377,7 @@ class PlugSwitching(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_plug_without_a_meter_reports_nothing(self):
         plug, _, _ = self.plug(energy=None)
-        with quiet():
+        with mock.patch.object(main.asyncio, "sleep", no_sleep), quiet():
             self.assertIsNone(await plug.energy_today_kwh())
 
     async def test_a_meter_without_a_daily_total_reports_nothing(self):
@@ -388,8 +394,70 @@ class PlugSwitching(unittest.IsolatedAsyncioTestCase):
         # Nothing decides on this number, so an unreadable one must not stop
         # the pass - it just leaves a gap in the record.
         plug, _, _ = self.plug(energy=None)
-        with quiet():
+        with mock.patch.object(main.asyncio, "sleep", no_sleep), quiet():
             self.assertIsNone(await plug.power_w())
+
+
+class TheMeterRecovers(unittest.IsolatedAsyncioTestCase):
+    """A stale session must not take the meter out for the rest of the day.
+
+    The daytime window switches on the meter and nothing else, so a read that
+    gave up after one failure - keeping the dead handle - would leave the
+    socket off until the watcher was restarted. This is that bug, guarded.
+    """
+
+    def plug(self, **kwargs):
+        device = FakeDevice(**kwargs)
+        api = FakeApi(device)
+        return main.Plug(api, "10.0.0.5"), api, device
+
+    async def test_an_expired_session_is_retried_on_a_fresh_one(self):
+        plug, api, device = self.plug(meter_failures=1)
+        with mock.patch.object(main.asyncio, "sleep", no_sleep), quiet():
+            self.assertAlmostEqual(await plug.energy_today_kwh(), 1.234)
+        self.assertEqual(device.reads, 2)        # failed, then succeeded
+        self.assertEqual(api.connects, 2)        # on a new handshake
+
+    async def test_the_dead_handle_is_dropped_so_the_next_pass_reconnects(self):
+        plug, api, device = self.plug(meter_failures=99)
+        with mock.patch.object(main.asyncio, "sleep", no_sleep), quiet():
+            self.assertIsNone(await plug.energy_today_kwh())
+            device.meter_failures = 0
+            self.assertAlmostEqual(await plug.energy_today_kwh(), 1.234)
+        self.assertGreater(api.connects, 1)
+
+    async def test_the_outage_is_reported_once_not_every_pass(self):
+        plug, _, device = self.plug(meter_failures=99)
+        with mock.patch.object(main.asyncio, "sleep", no_sleep), quiet() as log:
+            for _ in range(3):
+                await plug.energy_today_kwh()
+        self.assertEqual(log.getvalue().count("cannot read the meter"), 1)
+
+    async def test_coming_back_is_reported_too(self):
+        plug, _, device = self.plug(meter_failures=99)
+        with mock.patch.object(main.asyncio, "sleep", no_sleep), quiet() as log:
+            await plug.energy_today_kwh()
+            device.meter_failures = 0
+            await plug.energy_today_kwh()
+        self.assertIn("meter readable again", log.getvalue())
+
+    async def test_a_long_outage_does_not_flood_the_log(self):
+        # _read reconnects every pass while the plug is unwell. If each
+        # handshake announced itself, the one warning that matters would be
+        # buried under a line a minute.
+        plug, _, _ = self.plug(meter_failures=99)
+        with mock.patch.object(main.asyncio, "sleep", no_sleep), quiet() as log:
+            for _ in range(5):
+                await plug.energy_today_kwh()
+        self.assertEqual(log.getvalue().count("connected to plug"), 1)
+
+    async def test_a_broken_meter_does_not_silence_the_power_read(self):
+        # Separate reads, separate reporting - one being out must not hide
+        # the other coming back.
+        plug, _, device = self.plug(meter_failures=99)
+        with mock.patch.object(main.asyncio, "sleep", no_sleep), quiet():
+            self.assertIsNone(await plug.energy_today_kwh())
+            self.assertEqual(await plug.power_w(), 2410)
 
 
 class FakeLogbook:
