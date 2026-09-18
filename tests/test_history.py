@@ -285,6 +285,46 @@ class Days(Booked):
         self.assertIsNone(day["delivered_kwh"])
 
 
+class Switches(Booked):
+    """The one thing the page may write, and what a broken one answers."""
+
+    def test_an_unthrown_switch_is_whatever_the_caller_defaults_to(self):
+        self.assertIs(self.book.control(history.CONTROL_ENABLED, True), True)
+        self.assertIs(self.book.control(history.CONTROL_ENABLED, False), False)
+
+    def test_it_comes_back_as_it_went_in(self):
+        self.book.set_control(history.CONTROL_ENABLED, False)
+        self.assertIs(self.book.control(history.CONTROL_ENABLED, True), False)
+        self.book.set_control(history.CONTROL_ENABLED, True)
+        self.assertIs(self.book.control(history.CONTROL_ENABLED, False), True)
+
+    def test_setting_it_answers_with_what_it_now_is(self):
+        self.assertIs(self.book.set_control(history.CONTROL_ENABLED, False), False)
+
+    def test_it_survives_the_file_being_reopened(self):
+        # A pause that undid itself on the next restart would be worse than
+        # no pause at all.
+        self.book.set_control(history.CONTROL_ENABLED, False)
+        self.book.close()
+        reopened = history.Logbook(self.dir / "history.db")
+        try:
+            self.assertIs(reopened.control(history.CONTROL_ENABLED, True), False)
+        finally:
+            reopened.close()
+
+    def test_a_switch_nobody_declared_is_refused_not_created(self):
+        self.assertIsNone(self.book.set_control("relay", True))
+        self.assertIsNone(self.book.control("relay", None))
+        rows = self.book._conn().execute("SELECT COUNT(*) FROM control").fetchone()
+        self.assertEqual(rows[0], 0)
+
+    def test_a_pause_is_not_aged_out_with_the_rest_of_the_record(self):
+        self.book.set_control(history.CONTROL_ENABLED, False)
+        with quiet():
+            self.book.prune()
+        self.assertIs(self.book.control(history.CONTROL_ENABLED, True), False)
+
+
 class Pruning(Booked):
 
     def test_old_rows_go(self):
@@ -422,7 +462,8 @@ class Migration(unittest.TestCase):
 class SchemaReading(unittest.TestCase):
 
     def test_every_table_is_found(self):
-        self.assertEqual(set(history._schema_columns()), {"samples", "events", "forecasts"})
+        self.assertEqual(set(history._schema_columns()),
+                         {"samples", "events", "forecasts", "control"})
 
     def test_the_declared_fields_all_exist_on_samples(self):
         columns = {name for name, _ in history._schema_columns()["samples"]}
@@ -455,6 +496,15 @@ class BrokenDisk(unittest.TestCase):
             book.event("socket is ON", "info", "plug")
             book.forecast(outlook(date(2026, 9, 13), [1.0]))
             book.prune()
+
+    def test_it_can_never_be_the_thing_that_pauses_the_watcher(self):
+        # The watcher asks for True, so an unreadable card reads as "carry on
+        # switching". A pause it invented would leave the load cold.
+        with quiet():
+            book = history.Logbook(self.path)
+            self.assertIs(book.control(history.CONTROL_ENABLED, True), True)
+            self.assertIsNone(book.set_control(history.CONTROL_ENABLED, False))
+            self.assertIs(book.control(history.CONTROL_ENABLED, True), True)
 
     def test_reading_from_it_gives_empty_answers(self):
         with quiet():

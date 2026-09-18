@@ -141,6 +141,21 @@ input[type=search] { cursor: text; min-width: 0; }
 .seg button + button { border-left: 1px solid var(--line); }
 .seg button.on { background: var(--ink); color: var(--panel); }
 
+/* The pause switch: the only control on the page, so it says which state it
+   is in rather than what clicking would do. Paused is amber, not neutral -
+   a watcher that is not switching is not a normal resting state. */
+#control button[data-enabled="0"].on { background: var(--warn); color: var(--panel); }
+.banner {
+  display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline;
+  border: 1px solid var(--warn); border-radius: var(--radius);
+  background: var(--on-soft); padding: 11px 14px; margin-bottom: 14px; font-size: 13px;
+  color: var(--ink-2);
+}
+.banner b { color: var(--warn); }
+.banner.bad { border-color: var(--error); background: transparent; }
+.banner.bad b { color: var(--error); }
+.banner[hidden] { display: none; }
+
 .legend { display: flex; gap: 14px; flex-wrap: wrap; padding: 10px 15px 0; font-size: 12px; color: var(--ink-2); }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
 .swatch { width: 14px; height: 3px; border-radius: 2px; background: currentColor; }
@@ -210,9 +225,15 @@ footer a { color: var(--ink-2); }
     <h1>Night boost</h1>
     <span class="sub" id="subtitle">&nbsp;</span>
     <span class="spacer"></span>
+    <div class="seg" id="control" title="Whether the watcher may switch the socket">
+      <button data-enabled="1">switching</button>
+      <button data-enabled="0">paused</button>
+    </div>
     <span class="pill live" id="livepill"><i class="dot"></i><span id="livetext">connecting</span></span>
     <button id="theme" title="Light / dark">◐</button>
   </header>
+
+  <div class="banner" id="banner" hidden></div>
 
   <section class="cards" id="cards"></section>
 
@@ -229,6 +250,7 @@ footer a { color: var(--ink-2); }
       <span style="color:var(--load)"><i class="swatch"></i>socket draw kW</span>
       <span style="color:var(--ink-3)"><i class="swatch block" style="background:var(--night);border:1px solid var(--line)"></i>cheap grid</span>
       <span style="color:var(--ink-3)"><i class="swatch block" style="background:var(--day);border:1px solid var(--line)"></i>free solar</span>
+      <span style="color:var(--warn)"><i class="swatch block" style="background:none;border:1px dashed var(--warn)"></i>paused</span>
     </div>
     <div class="chartbox" id="chartbox">
       <svg id="chart" height="330" role="img" aria-label="forecast roof, socket draw and socket history"></svg>
@@ -292,6 +314,7 @@ const RANGES = [
 const REFRESH_MS = 60000;
 
 const state = {
+  enabled: true,
   hours: Number(localStorage.getItem("range") || 24),
   level: "",
   q: "",
@@ -309,6 +332,19 @@ const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) =>
 
 async function api(path) {
   const res = await fetch(path, { cache: "no-store" });
+  if (!res.ok) throw new Error(path + " -> " + res.status);
+  return res.json();
+}
+
+/* The only request on this page that is not a GET. It changes one boolean in
+   the watcher's logbook - whether it may switch the socket - and nothing else
+   here writes anything. */
+async function post(path, body) {
+  const res = await fetch(path, {
+    method: "POST", cache: "no-store",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
   if (!res.ok) throw new Error(path + " -> " + res.status);
   return res.json();
 }
@@ -347,6 +383,40 @@ function bytes(b) {
   return b > 1048576 ? (b / 1048576).toFixed(1) + " MB" : Math.round(b / 1024) + " kB";
 }
 
+/* ---------- the pause switch ---------- */
+
+/* Paused, the watcher keeps reading the meter, keeps fetching the sky and
+   keeps recording - it just stops commanding the relay, so the socket holds
+   whatever state it was in. Clicking this never switches anything itself. */
+function renderControl(enabled, note) {
+  state.enabled = enabled;
+  [...$("control").children].forEach((button) =>
+    button.classList.toggle("on", (button.dataset.enabled === "1") === enabled));
+
+  const banner = $("banner");
+  banner.hidden = enabled && !note;
+  banner.className = "banner" + (note ? " bad" : "");
+  banner.innerHTML = note
+    ? `<b>Not saved.</b><span>${esc(note)}</span>`
+    : `<b>Paused.</b><span>The watcher is still reading and recording, but it will not
+       switch the socket - it keeps whatever state it is in now. Set it back to
+       <b>switching</b> to hand it back the relay.</span>`;
+}
+
+async function setEnabled(enabled) {
+  try {
+    const data = await post("/api/control", { enabled });
+    renderControl(data.enabled !== false, data.stored === false
+      ? "The watcher could not write that to its logbook, so the switch has not moved."
+      : "");
+    /* The cards still describe the pass before the click; ask for a fresh
+       one rather than leaving the Socket card contradicting the banner. */
+    loadState();
+  } catch (err) {
+    renderControl(state.enabled, "The watcher did not answer, so the switch has not moved.");
+  }
+}
+
 /* ---------- status cards ---------- */
 
 function renderCards(data) {
@@ -367,6 +437,9 @@ function renderCards(data) {
   $("livetext").textContent = s.ts ? (stale ? "last seen " + ago(age) : "updated " + ago(age)) : "no data yet";
 
   const on = !!s.socket_on;
+  /* The pass's own switch, not the live one: this card describes that pass,
+     and a row older than the column itself simply has none. */
+  const paused = s.enabled === 0 || s.enabled === false;
   const target = set.device_daily_kwh || 0;
   const delivered = s.delivered_kwh;
   const phase = s.phase || "idle";
@@ -379,6 +452,7 @@ function renderCards(data) {
     <div class="big ${on ? "state-on" : "state-off"}">${on ? "ON" : "OFF"}</div>
     <div class="note tight">${esc(phaseLabel)}${
       s.plug_power_w == null ? "" : " · drawing " + kw(s.plug_power_w)}</div>
+    ${paused ? `<div class="note tight" style="color:var(--warn)">paused · left as it is</div>` : ""}
     ${target > 0 ? `
       <div class="bar amber"><i style="width:${Math.min(100, 100 * (delivered || 0) / target)}%"></i></div>
       <div class="note">${delivered == null ? "meter unavailable"
@@ -427,7 +501,9 @@ function renderCards(data) {
     </div>
     <div class="note tight">for ${esc(dayName(judged).toLowerCase())} ${esc(niceDay(judged))}</div>`
     : ""}
-    ${s.wanted != null && !!s.wanted !== on ? `<div class="note" style="color:var(--warn)">
+    ${paused ? `<div class="note" style="color:var(--warn)">
+      not acted on — the watcher is paused</div>`
+    : s.wanted != null && !!s.wanted !== on ? `<div class="note" style="color:var(--warn)">
       wanted ${s.wanted ? "ON" : "OFF"} — the plug did not follow</div>` : ""}
   `));
 
@@ -545,6 +621,13 @@ function renderChart() {
     parts.push(`<rect x="${x(from)}" y="${bandY}" width="${Math.max(1.5, x(to) - x(from))}"
       height="${bandH}" rx="3" fill="${phase === "solar" ? "var(--solar)" : "var(--on)"}"></rect>`);
   }
+  /* Over the band, not in it: what the socket did is still the truth, and
+     these are the stretches where the watcher was not the one deciding it. */
+  for (const [from, to] of runsPaused(rows, now)) {
+    parts.push(`<rect x="${x(from)}" y="${bandY - 1}" width="${Math.max(1.5, x(to) - x(from))}"
+      height="${bandH + 2}" rx="4" fill="none" stroke="var(--warn)" stroke-width="1"
+      stroke-dasharray="3 3"></rect>`);
+  }
   parts.push(`<text x="${M.left - 7}" y="${bandY + 11}" text-anchor="end" font-size="10"
     fill="var(--ink-3)">plug</text>`);
 
@@ -615,6 +698,21 @@ function runsOn(rows, until) {
     }
   }
   if (from != null) runs.push([from, until, phase]);
+  return runs;
+}
+
+function runsPaused(rows, until) {
+  /* Contiguous stretches the page had the watcher paused for. A row written
+     before this column existed carries no `enabled` at all, and counts as
+     switching - the same blank the watcher itself reads as "carry on". */
+  const runs = [];
+  let from = null;
+  for (const r of rows) {
+    const paused = r.enabled === 0 || r.enabled === false;
+    if (paused && from == null) from = r.ts;
+    else if (!paused && from != null) { runs.push([from, r.ts]); from = null; }
+  }
+  if (from != null) runs.push([from, until]);
   return runs;
 }
 
@@ -694,6 +792,8 @@ function hover(event) {
     ${best.target_kwh != null ? `<div class="row"><span>grid share</span><span>${n1(best.target_kwh, " kWh")}</span></div>` : ""}
     ${best.delivered_kwh != null ? `<div class="row"><span>delivered</span><span>${n1(best.delivered_kwh, " kWh")}</span></div>` : ""}
     <div class="row"><span>window</span><span>${esc({ night: "cheap grid", solar: "free solar" }[best.phase] || "—")}</span></div>
+    ${best.enabled === 0 ? `<div class="row"><span>watcher</span>
+      <span style="color:var(--warn)">paused</span></div>` : ""}
     ${best.reason ? `<div class="reason">${esc(best.reason)}</div>` : ""}`;
 
   const left = Math.max(4, Math.min(rect.width - 200, cx / scale - 90));
@@ -874,6 +974,7 @@ async function loadState() {
   try {
     const data = await api("/api/state");
     state.settings = data.settings || {};
+    renderControl(data.enabled !== false);
     renderCards(data);
     renderForecast(data);
   } catch (err) {
@@ -918,6 +1019,11 @@ function boot() {
   };
 
   buildRanges();
+
+  $("control").onclick = (e) => {
+    const button = e.target.closest("button");
+    if (button) setEnabled(button.dataset.enabled === "1");
+  };
 
   $("levels").onclick = (e) => {
     const button = e.target.closest("button");

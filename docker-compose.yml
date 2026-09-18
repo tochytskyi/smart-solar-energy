@@ -34,3 +34,25 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: tapo-ngrok
+
+    # Expose the dashboard through ngrok. Credentials come from .env.
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
+
+    command:
+      - "http"
+      - "--domain=${NGROK_DOMAIN}"
+      - "host.docker.internal:8080"
+
+    ports:
+      - "4040:4040"
+
+    restart: unless-stopped
+
+    # Only start if NGROK_AUTHTOKEN is set
+    profiles:
+      - ngrok

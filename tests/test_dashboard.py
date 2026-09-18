@@ -1,8 +1,10 @@
 """The status page's server: what each route answers, and what it refuses.
 
-The dashboard is read-only and unauthenticated by design, so two of these
-tests are guards rather than checks - nothing may write, and nothing that
-belongs in .env may ever be served.
+Everything here reads except one route, and that one writes a single boolean:
+whether the watcher may switch the socket at all. It is unauthenticated by
+design, so several of these tests are guards rather than checks - nothing but
+that switch may be written, and nothing that belongs in .env may ever be
+served.
 """
 
 import json
@@ -95,6 +97,18 @@ class Routes(unittest.TestCase):
                 return response.status, response.read().decode("utf-8"), response.headers
         except urllib.error.HTTPError as exc:
             return exc.code, exc.read().decode("utf-8"), exc.headers
+
+    def post(self, path, body):
+        """One control request, as the page makes it."""
+        data = body if isinstance(body, bytes) else json.dumps(body).encode("utf-8")
+        request = urllib.request.Request(
+            "http://127.0.0.1:%d%s" % (self.port, path), data=data, method="POST",
+            headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return response.status, json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode("utf-8"))
 
     def json(self, path):
         status, body, _ = self.get(path)
@@ -199,6 +213,69 @@ class Routes(unittest.TestCase):
         _, body, _ = self.get("/api/export.csv?hours=2")
         self.assertIn('"buying 4.0 kWh, ""cheaply"""', body)
 
+    # -- the switch -------------------------------------------------------
+
+    def tearDown(self):
+        # Every test here starts from a watcher that is switching.
+        self.book.set_control(history.CONTROL_ENABLED, True)
+
+    def test_the_state_says_the_watcher_is_switching_until_it_is_paused(self):
+        self.assertIs(self.json("/api/state")["enabled"], True)
+
+    def test_pausing_is_answered_and_then_reported(self):
+        status, payload = self.post("/api/control", {"enabled": False})
+        self.assertEqual(status, 200)
+        self.assertIs(payload["enabled"], False)
+        self.assertIs(payload["stored"], True)
+        self.assertIs(self.json("/api/state")["enabled"], False)
+
+    def test_resuming_puts_it_back(self):
+        self.post("/api/control", {"enabled": False})
+        self.assertIs(self.post("/api/control", {"enabled": True})[1]["enabled"], True)
+        self.assertIs(self.json("/api/state")["enabled"], True)
+
+    def test_the_same_state_twice_is_not_an_error(self):
+        self.post("/api/control", {"enabled": False})
+        self.assertEqual(self.post("/api/control", {"enabled": False})[0], 200)
+
+    def test_the_watcher_is_told_only_when_it_actually_changed(self):
+        seen = []
+        server = dashboard.serve("127.0.0.1", 0, self.book, main.settings,
+                                 on_control=seen.append)
+        port = server.server_address[1]
+        try:
+            for wanted in (False, False, True):
+                urllib.request.urlopen(urllib.request.Request(
+                    "http://127.0.0.1:%d/api/control" % port,
+                    data=json.dumps({"enabled": wanted}).encode("utf-8"),
+                    method="POST"), timeout=10).close()
+        finally:
+            server.shutdown()
+            server.server_close()
+        self.assertEqual(seen, [False, True])
+
+    def test_a_string_is_not_a_boolean(self):
+        # bool("false") is True; a switch that means the opposite of what was
+        # typed is worse than one that will not move.
+        status, payload = self.post("/api/control", {"enabled": "false"})
+        self.assertEqual(status, 400)
+        self.assertIs(self.json("/api/state")["enabled"], True)
+
+    def test_junk_is_refused_rather_than_guessed_at(self):
+        for body in (b"", b"not json", b"[]", b'{"other": true}'):
+            self.assertEqual(self.post("/api/control", body)[0], 400)
+
+    def test_a_body_too_big_to_be_ours_is_not_read_in(self):
+        status, payload = self.post("/api/control", b'{"enabled": false, "pad": "'
+                                    + b"x" * dashboard.MAX_BODY + b'"}')
+        self.assertEqual(status, 413)
+        self.assertIs(self.book.control(history.CONTROL_ENABLED, True), True)
+
+    def test_it_reaches_nothing_else_in_the_logbook(self):
+        self.assertEqual(self.post("/api/control", {"phase": "night"})[0], 400)
+        self.assertEqual(self.post("/api/settings", {"enabled": False})[0], 404)
+        self.assertIs(self.json("/api/state")["enabled"], True)
+
     # -- the guards -------------------------------------------------------
 
     def test_an_unknown_route_is_a_404(self):
@@ -206,10 +283,17 @@ class Routes(unittest.TestCase):
         self.assertEqual(status, 404)
         self.assertEqual(json.loads(body)["error"], "not found")
 
-    def test_nothing_can_be_written_through_it(self):
-        # The page is read-only by design: there is no handler for a POST.
-        status, _, _ = self.get("/api/state", data=b"socket_on=1")
-        self.assertEqual(status, 501)
+    def test_the_switch_is_the_only_thing_that_can_be_written(self):
+        # Everything else refuses a POST outright rather than doing something
+        # helpful with it.
+        for route in ("/api/state", "/api/samples", "/api/days", "/api/export.csv", "/"):
+            self.assertEqual(self.post(route, {"enabled": False})[0], 404)
+        self.assertIs(self.json("/api/state")["enabled"], True)
+
+    def test_nothing_the_page_sends_can_switch_the_socket(self):
+        # The switch says whether the watcher may decide; it is not a relay.
+        status, payload = self.post("/api/control", {"socket_on": True})
+        self.assertEqual(status, 400)
 
     def test_no_credential_is_ever_served(self):
         for route in ("/api/state", "/api/samples", "/api/events", "/api/days"):

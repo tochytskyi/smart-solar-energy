@@ -93,7 +93,8 @@ Pi's own address. It shows:
   verdict can be checked by eye. Open-Meteo is asked for two days at a time, so
   the second one costs nothing extra;
 - **the log** - the same lines `docker compose logs` shows, kept for
-  `HISTORY_RETENTION_DAYS`, filterable by level and text.
+  `HISTORY_RETENTION_DAYS`, filterable by level and text;
+- **the pause switch** - top right, `switching` / `paused`. See below.
 
 It refreshes itself once a minute - the same cadence as `CHECK_INTERVAL`, so
 the page is never more than one decision behind - and reads well on a phone. A
@@ -109,10 +110,60 @@ database with three days of invented behaviour and serves the same page on
 `http://127.0.0.1:8080`, which is the quick way to see what the dashboard looks
 like before a night has actually passed.
 
-The page is **read-only and unauthenticated** - it can show the numbers, never
-change them, and it carries no credentials. Keep it on the LAN; do not forward
-the port. `DASHBOARD_HOST=127.0.0.1` restricts it to the Pi itself (reachable
-then over an SSH tunnel), and `DASHBOARD_PORT=0` switches it off entirely.
+### Pausing it from the page
+
+The switch in the top right corner hands the socket back to you:
+
+| | what the watcher does |
+|---|---|
+| `switching` | the normal thing - decides every `CHECK_INTERVAL` and commands the relay |
+| `paused` | still reads the meter, still fetches the forecast, still records every pass and its verdict - but never touches the relay |
+
+**Pausing does not switch the socket.** It leaves it exactly as it was at that
+moment: on stays on, off stays off, and it will sit there until the switch goes
+back or you change it yourself in the Tapo app. That is the point of it - a
+morning where you want the boiler left alone, or an evening where you want it
+on regardless of the arithmetic, without stopping the container and losing the
+record.
+
+While it is paused the page says so in a band across the top, the Socket card
+says the state is being left alone, and the chart outlines the paused stretches
+over the plug band, so a night that looks wrong can be read back later and
+explained. The socket's state is read off the plug itself for as long as the
+pause lasts, rather than remembered - so switching it by hand in the Tapo app
+shows up on the chart like any other change. The verdict is still worked out and written to the log and the CSV -
+"paused from the page - would be ON: ..." - so you can see what it wanted to do
+while it was not doing it.
+
+The switch is kept in the logbook, not in memory: it survives a restart, a
+reboot and a `docker compose pull`. A watcher that starts up paused says so in
+the log. Coming back to `switching` re-sends the verdict to the plug rather
+than assuming the relay is where it was left, because it may not be.
+
+```bash
+# the same switch, without a browser
+curl -s -X POST -H "Content-Type: application/json" \
+  -d '{"enabled": false}' http://<pi-address>:8080/api/control
+curl -s http://<pi-address>:8080/api/state | grep -o '"enabled":[a-z]*'
+```
+
+`python check.py` reports the pause too, above the verdict it would otherwise
+be acting on.
+
+### Keep it on the LAN
+
+Every other route is **read-only**, and none of them carries a credential. The
+one that is not - `POST /api/control` - writes a single boolean and can reach
+nothing else: it cannot switch the socket, cannot change a threshold, and
+cannot touch the record.
+
+There is no password on any of it. Anyone who can open the page can pause the
+heating, so keep it on the LAN and do not forward the port.
+`DASHBOARD_HOST=127.0.0.1` restricts it to the Pi itself (reachable then over
+an SSH tunnel), and `DASHBOARD_PORT=0` switches it off entirely. The optional
+`ngrok` profile in `docker-compose.yml` does the opposite - it puts this page,
+switch and all, on a public address - so only run it behind ngrok's own access
+control, and never with a reserved domain you have shared.
 
 ### Where the history lives
 
@@ -152,6 +203,7 @@ budget** - whatever the night buys, the afternoon does not repeat.
 | `NIGHT_START`-`NIGHT_END` (00:00-07:00) | cheap grid | today's sun will not cover the load |
 | `SOLAR_START`-`SOLAR_END` (10:00-18:00) | roof first, grid for the rest | the budget is not full yet |
 | anything else | - | never |
+| any of them, paused from the page | - | never - the relay is not touched at all |
 
 **Two numbers decide all of it**: the plug's own meter, and the Open-Meteo
 forecast for this roof. Nothing is read from the inverter - no cloud account,

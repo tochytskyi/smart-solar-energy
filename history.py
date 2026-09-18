@@ -1,6 +1,6 @@
-"""Durable record of what the watcher saw and did.
+"""Durable record of what the watcher saw and did, and the one switch it obeys.
 
-Three tables in one SQLite file:
+Four tables in one SQLite file:
 
   samples    one row per decision pass - the numbers that went into the call
              and the call itself. This is what the dashboard charts.
@@ -8,6 +8,10 @@ Three tables in one SQLite file:
              cloud outages, start-up banners. This is what it tails.
   forecasts  the hourly solar outlook as it was fetched, one row per day, so
              the chart can draw the curve the decision was actually made on.
+  control    the switches the page may throw. One so far: whether the watcher
+             is allowed to switch the socket at all. It is the only row here
+             anything outside this process writes, and the only reason the
+             dashboard is not purely a reader.
 
 SQLite rather than a text file because the dashboard asks for "the last three
 days" and "only the warnings" without re-reading megabytes, and because one
@@ -42,6 +46,7 @@ CREATE TABLE IF NOT EXISTS samples (
     delivered_kwh       REAL,
     free_kwh            REAL,
     target_kwh          REAL,
+    enabled             INTEGER,
     wanted              INTEGER,
     socket_on           INTEGER,
     reason              TEXT
@@ -66,16 +71,33 @@ CREATE TABLE IF NOT EXISTS forecasts (
     rain_mm     REAL,
     hours       TEXT
 );
+
+CREATE TABLE IF NOT EXISTS control (
+    name        TEXT PRIMARY KEY,
+    value       INTEGER NOT NULL,
+    ts          REAL NOT NULL
+);
 """
 
 # Every column a sample may carry, in insert order. Anything absent is NULL.
 SAMPLE_FIELDS = (
     "phase", "strategy", "pv_forecast_kwh", "peak_kw",
     "cloud_cover", "rain_mm", "wet_fraction", "plug_power_w", "delivered_kwh",
-    "free_kwh", "target_kwh", "wanted", "socket_on", "reason",
+    "free_kwh", "target_kwh", "enabled", "wanted", "socket_on", "reason",
 )
 
 LEVELS = ("info", "warn", "error")
+
+# Whether the watcher is allowed to switch the socket at all. This is the one
+# thing the page can change rather than only read, and it survives a restart -
+# a pause that quietly undid itself on the next `docker compose pull` would be
+# worse than no pause at all.
+CONTROL_ENABLED = "enabled"
+
+# Every switch that may be thrown from outside. An unknown name is refused
+# rather than created, so a stray POST cannot invent a setting the watcher
+# will never read.
+CONTROLS = (CONTROL_ENABLED,)
 
 # A gap longer than this between two samples is downtime, not socket time, so
 # the daily totals stop counting across it.
@@ -203,6 +225,38 @@ class Logbook:
                 " cloud_cover=excluded.cloud_cover, rain_mm=excluded.rain_mm,"
                 " hours=excluded.hours", row))
 
+    def control(self, name, default=None):
+        """One switch's state, or `default` if it was never thrown.
+
+        `default` is also the answer from a database that cannot be read, which
+        is why the watcher asks for True: a full or corrupt card must never be
+        the thing that quietly stops the socket being switched.
+        """
+        if name not in CONTROLS:
+            return default
+        row = self._execute(lambda conn: _one(conn.execute(
+            "SELECT value FROM control WHERE name = ?", (name,))))
+        if not row or row["value"] is None:
+            return default
+        return bool(row["value"])
+
+    def set_control(self, name, on):
+        """Throw a switch and keep it across restarts.
+
+        Returns the state afterwards, read back rather than assumed: if the
+        write did not land, the caller - and so the page - is told the switch
+        is still where it was instead of drawing one that was never stored.
+        """
+        if name not in CONTROLS:
+            return None
+        row = (name, int(bool(on)), time.time())
+        with self._lock:
+            self._execute(lambda conn: conn.execute(
+                "INSERT INTO control (name, value, ts) VALUES (?, ?, ?)"
+                " ON CONFLICT(name) DO UPDATE SET value=excluded.value, ts=excluded.ts",
+                row))
+        return self.control(name, default=None)
+
     def prune(self):
         """Drop everything past the retention horizon and reclaim the pages."""
         if self.retention_days <= 0:
@@ -213,6 +267,8 @@ class Logbook:
             conn.execute("DELETE FROM samples WHERE ts < ?", (cutoff,))
             conn.execute("DELETE FROM events WHERE ts < ?", (cutoff,))
             conn.execute("DELETE FROM forecasts WHERE ts < ?", (cutoff,))
+            # `control` is deliberately not pruned: a pause thrown five weeks
+            # ago is still a pause, and ageing it out would silently resume.
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
         with self._lock:

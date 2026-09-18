@@ -10,6 +10,16 @@ the part the roof will not. It runs as a single process on a Raspberry Pi in
 Docker, decides once a `CHECK_INTERVAL`, writes everything it saw and did to a
 SQLite logbook, and serves that logbook as a live page.
 
+**The page can stop it.** One switch - `control.enabled` in the logbook,
+thrown by `POST /api/control` - decides whether the loop is allowed to command
+the relay. Paused, every pass still reads, decides and records; only the
+switching stops, so the socket keeps whatever state it was in. It also asks
+the plug what its relay is actually doing, because what it last commanded is
+no longer evidence once a person can switch it by hand - that read reaches the
+record and never a decision. It is the one
+thing on the page that changes anything, and `tests/test_contract.py::
+ThePageChangesExactlyOneThing` fails if a second one appears.
+
 **Two inputs, and only two**: the plug's own meter and the Open-Meteo forecast.
 The inverter is not read - there was a Deye Cloud client here and it is gone.
 `tests/test_contract.py::TheInverterIsNotRead` fails if it creeps back.
@@ -30,7 +40,7 @@ windows is explained there, and it is the file to update when the rules change.
 | `tapo_client.py` | `.env` loading and the Tapo API client |
 | `solar_forecast.py` | Open-Meteo hourly yield for this roof, and the row covering "now" |
 | `history.py` | the SQLite logbook: `samples`, `events`, `forecasts` |
-| `dashboard.py` | read-only HTTP server for the page and its JSON |
+| `dashboard.py` | HTTP server for the page and its JSON. Reads, apart from the one route that throws the pause switch |
 | `dashboard.html` | the page itself - vanilla JS, hand-drawn SVG charts, no build step |
 | `check.py` | one-off status report from the terminal |
 | `demo.py` | fills a throwaway logbook with invented data and serves the page |
@@ -50,6 +60,7 @@ behaviour is an unfinished change.
 | a new config key | `.env.example` with a comment saying what it is for, `settings()` in `main.py` if the page needs to draw it (thresholds, windows), `demo.py`'s `SETTINGS`, and `DOCKER.md` |
 | a new window, mode or state | a `phase` value in `main.py`, its shading in the chart, its colour in the plug band, and its column in the Nights table |
 | a new way to fail | log it at `warn` or `error` so it stands out red on the page, and make sure the loop carries on |
+| a new thing the page can change | a name in `CONTROLS` (`history.py`), a branch in `do_POST` (`dashboard.py`), a control in the header **and** the state it produces drawn wherever the record shows it, and the guard in `tests/test_contract.py` widened deliberately rather than by accident |
 
 Adding a column is safe on a running Pi: `history.Logbook` compares `SCHEMA`
 against the open database at startup and `ALTER TABLE`s in anything missing,
@@ -137,8 +148,14 @@ then crops the image, so `--window-size=400,...` shows a false clip - ask for
 - `HTTPServer.server_bind()` resolves the host's FQDN, which stalls for seconds
   on a LAN with no reverse DNS - `dashboard.Server` skips it. Do not go back to
   plain `ThreadingHTTPServer`.
-- The dashboard is **unauthenticated and read-only**, on the LAN by design.
-  Never add a route that writes, and never expose it to the internet.
+- The dashboard is **unauthenticated**, on the LAN by design, and it writes
+  exactly one thing: the pause switch, through `POST /api/control`. Anyone who
+  can reach the page can stop the watcher heating, which is the whole reason
+  the port must not be forwarded - `docker-compose.yml` has an optional ngrok
+  profile that does exactly that, and turning it on puts the switch on the
+  public internet with no password in front of it. Never add a second writing
+  route, and never let one of them reach the relay directly: the page says
+  whether the watcher may decide, it is not a remote control for the socket.
 - Docker creates a missing bind-mount source as root, and the container runs as
   uid 1000 - `data/` has to exist before `docker compose up`.
 - **The forecast is potential, not harvest. They are not the same number on

@@ -251,11 +251,14 @@ class FakeDevice:
     energy=None is a plug with no meter at all, like a P100.
     """
 
-    def __init__(self, failures=0, energy=METER, power=2410, meter_failures=0):
+    def __init__(self, failures=0, energy=METER, power=2410, meter_failures=0,
+                 relay=False, info_failures=0):
         self.failures = failures
         self.energy = energy
         self.power = power
         self.meter_failures = meter_failures     # e.g. an expired session
+        self.relay = relay          # what the socket is doing, however it got there
+        self.info_failures = info_failures
         self.calls = []
         self.reads = 0
 
@@ -270,6 +273,13 @@ class FakeDevice:
         if self.failures:
             self.failures -= 1
             raise RuntimeError("DeviceError: HostUnreachable")
+        self.relay = state
+
+    async def get_device_info(self):
+        if self.info_failures:
+            self.info_failures -= 1
+            raise RuntimeError("SessionTimeout")
+        return types.SimpleNamespace(to_dict=lambda: {"device_on": self.relay})
 
     async def get_energy_usage(self):
         self.reads += 1
@@ -398,6 +408,53 @@ class PlugSwitching(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(await plug.power_w())
 
 
+class ComingBackFromAPause(unittest.IsolatedAsyncioTestCase):
+    """What the watcher believes the relay is doing stops being evidence the
+    moment it hands the socket back to a person."""
+
+    def plug(self, **kwargs):
+        device = FakeDevice(**kwargs)
+        return main.Plug(FakeApi(device), "10.0.0.5"), device
+
+    async def test_the_verdict_is_re_sent_after_a_pause(self):
+        plug, device = self.plug()
+        with quiet():
+            await plug.set_state(True)
+            plug.forget()               # what main() does on resuming
+            await plug.set_state(True)
+        # Twice: while paused the socket may have been switched by hand, so
+        # "I already commanded ON" no longer says the relay is ON.
+        self.assertEqual(device.calls, [True, True])
+
+    async def test_it_is_not_re_sent_when_nothing_was_paused(self):
+        plug, device = self.plug()
+        with quiet():
+            await plug.set_state(True)
+            await plug.set_state(True)
+        self.assertEqual(device.calls, [True])
+
+    async def test_the_relay_is_asked_while_nothing_is_being_commanded(self):
+        plug, device = self.plug(relay=True)
+        # Nobody commanded this - someone switched it in the Tapo app while
+        # the watcher was paused - and the record has to say so anyway.
+        with quiet():
+            self.assertIs(await plug.is_on(), True)
+        self.assertEqual(device.calls, [])
+        self.assertIsNone(plug.state)
+
+    async def test_a_relay_that_cannot_be_read_is_unknown_not_off(self):
+        plug, _ = self.plug(info_failures=2)
+        with quiet():
+            self.assertIsNone(await plug.is_on())
+
+    async def test_forgetting_leaves_the_state_unknown_rather_than_off(self):
+        plug, _ = self.plug()
+        with quiet():
+            await plug.set_state(True)
+        plug.forget()
+        self.assertIsNone(plug.state)
+
+
 class TheMeterRecovers(unittest.IsolatedAsyncioTestCase):
     """A stale session must not take the meter out for the rest of the day.
 
@@ -488,6 +545,17 @@ class SampleRecording(unittest.TestCase):
         recorder.record(socket_on=False, wanted=False, reason="outside both windows")
         recorder.record(socket_on=True, wanted=True, reason="buying 4.0 kWh")
         self.assertEqual(len(book.samples), 2)
+
+    def test_a_pause_alone_is_written_at_once(self):
+        # Nothing else about the pass changes when the switch is thrown - the
+        # verdict and the relay both stay put - so if this were not in the key
+        # the record would show no pause until the reason moved on.
+        book = FakeLogbook()
+        recorder = main.Recorder(book, 3600)
+        recorder.record(socket_on=True, wanted=True, enabled=True, reason="buying 4.0 kWh")
+        recorder.record(socket_on=True, wanted=True, enabled=False, reason="buying 4.0 kWh")
+        self.assertEqual(len(book.samples), 2)
+        self.assertIs(book.samples[1]["enabled"], False)
 
     def test_a_changed_reason_alone_is_written_at_once(self):
         # The numbers in the reason are the interesting part of a quiet hour.

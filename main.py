@@ -18,6 +18,12 @@ windows share one daily budget:
 
 Outside both windows the socket stays off.
 
+All of that can be suspended from the page. Paused, the watcher still reads
+the meter, still fetches the sky and still records every pass - it simply
+stops commanding the relay, so the socket keeps whatever state it had, and it
+asks the plug what that state is rather than assuming. The switch lives in the
+logbook, so it survives a restart.
+
 The forecast is one number a day - the total the roof should make - and it
 only ever sizes the night's buy. Nothing here tries to work out which hours
 will be sunny: a day that comes in under forecast costs some energy at the
@@ -83,7 +89,8 @@ HISTORY_DB = config("HISTORY_DB", "data/history.db", required=False)
 HISTORY_RETENTION_DAYS = float(config("HISTORY_RETENTION_DAYS", "30", required=False))
 HISTORY_SAMPLE_INTERVAL = int(config("HISTORY_SAMPLE_INTERVAL", "300", required=False))
 
-# The read-only status page. Port 0 switches it off.
+# The status page. Port 0 switches it off. It reads the logbook, and writes
+# exactly one thing back: the pause below.
 DASHBOARD_PORT = int(config("DASHBOARD_PORT", "8080", required=False))
 DASHBOARD_HOST = config("DASHBOARD_HOST", "0.0.0.0", required=False)
 
@@ -96,6 +103,18 @@ def log(message, level="info", category="system"):
     print("[%s] %s" % (datetime.now().strftime("%H:%M:%S"), message), flush=True)
     if LOGBOOK is not None:
         LOGBOOK.event(message, level, category)
+
+
+def announce_control(enabled):
+    """Log a flip of the page's switch, on the thread that served the click.
+
+    The loop reads the switch itself on its next pass, so this changes
+    nothing - it only means the Log panel shows the pause at the second it
+    happened rather than up to a CHECK_INTERVAL later.
+    """
+    log("resumed from the page - switching the socket again" if enabled
+        else "PAUSED from the page - the socket is left exactly as it is",
+        "info" if enabled else "warn", "decision")
 
 
 def settings():
@@ -141,6 +160,17 @@ class Plug:
             self._announced = True
             log("connected to plug at %s" % self._ip, category="plug")
         return self._device
+
+    def forget(self):
+        """Drop what we believe the relay is doing, so the next command is sent.
+
+        Only used when coming back from a pause. While the watcher was paused
+        the socket may have been switched by hand in the Tapo app, and
+        set_state skips the round trip when it thinks it is already there -
+        so without this, resuming could leave the relay wherever a person put
+        it and never notice.
+        """
+        self._state = None
 
     async def set_state(self, on):
         """Switch the relay, skipping the round trip if it is already there."""
@@ -220,6 +250,20 @@ class Plug:
             return None
         today_wh = usage.get("today_energy")
         return None if today_wh is None else float(today_wh) / 1000.0
+
+    async def is_on(self):
+        """What the relay is actually doing, or None if it cannot be read.
+
+        Only asked while the watcher is paused. The rest of the time the state
+        it last commanded is the answer and costs no round trip - but paused it
+        commands nothing, and the whole point of a pause is that someone else
+        is deciding. Recording what we last said would be recording a guess.
+        """
+        info = await self._read("get_device_info", "relay state")
+        if info is None:
+            return None
+        state = info.get("device_on")
+        return None if state is None else bool(state)
 
     async def power_w(self):
         """What the socket is drawing this second, or None if unavailable.
@@ -324,7 +368,8 @@ class Recorder:
         self._pruned_at = time.monotonic()
 
     def record(self, **fields):
-        key = (fields.get("socket_on"), fields.get("wanted"), fields.get("reason"))
+        key = (fields.get("socket_on"), fields.get("wanted"),
+               fields.get("enabled"), fields.get("reason"))
         now = time.monotonic()
         if key == self._key and now - self._written_at < self._interval:
             return
@@ -399,7 +444,8 @@ async def main():
     server = None
     if DASHBOARD_PORT:
         try:
-            server = dashboard.serve(DASHBOARD_HOST, DASHBOARD_PORT, LOGBOOK, settings, on_log=log)
+            server = dashboard.serve(DASHBOARD_HOST, DASHBOARD_PORT, LOGBOOK, settings,
+                                     on_log=log, on_control=announce_control)
         except OSError as exc:
             log("dashboard could not take port %d: %s" % (DASHBOARD_PORT, exc), "error")
 
@@ -411,6 +457,9 @@ async def main():
         loop.add_signal_handler(sig, stop.set)
 
     log("controlling %s only, %.1f kWh/day budget" % (PLUG_IP, DEVICE_DAILY_KWH))
+    if not LOGBOOK.control(history.CONTROL_ENABLED, True):
+        log("still PAUSED from an earlier session - the socket will not be switched"
+            " until the page resumes it", "warn", "decision")
     log("cheap grid %s-%s (strategy '%s'), top-up from %s until the budget is met" % (
         NIGHT_START.strftime("%H:%M"), NIGHT_END.strftime("%H:%M"), BOOST_STRATEGY,
         SOLAR_START.strftime("%H:%M")))
@@ -430,8 +479,14 @@ async def main():
                 DEVICE_DAILY_KWH, SOLAR_START.strftime("%H:%M")), "warn")
 
     last_reason = None
+    was_enabled = True
     while not stop.is_set():
         now = datetime.now()
+
+        # The page's switch, re-read every pass so a click takes effect within
+        # one CHECK_INTERVAL. A logbook that cannot be read answers True: a
+        # broken card must not be able to stop the socket being switched.
+        enabled = LOGBOOK.control(history.CONTROL_ENABLED, True)
 
         night = in_window(now.time(), NIGHT_START, NIGHT_END)
         solar = in_window(now.time(), SOLAR_START, SOLAR_END)
@@ -454,10 +509,30 @@ async def main():
         else:
             wanted, reason = False, "outside both windows"
 
+        if not enabled:
+            # Paused: the verdict is still worked out and recorded, so the
+            # record shows what the watcher would have done, and the page can
+            # say so. The relay is simply never commanded.
+            reason = "paused from the page - would be %s: %s" % (
+                "ON" if wanted else "off", reason)
+
         if reason != last_reason:
             log(reason, category="decision")
             last_reason = reason
-        await plug.set_state(wanted)
+
+        if enabled:
+            if not was_enabled:
+                # Coming back from a pause, re-send whatever the verdict is:
+                # the relay may have been switched by hand while we were not
+                # looking, so what we last commanded is no longer evidence.
+                plug.forget()
+            await plug.set_state(wanted)
+            socket_on = plug.state
+        else:
+            # Nothing was commanded, so the only way to know what the socket
+            # is doing is to ask it.
+            socket_on = await plug.is_on()
+        was_enabled = enabled
 
         free_kwh = target_kwh = None
         if outlook is not None and BOOST_STRATEGY == "forecast":
@@ -475,8 +550,9 @@ async def main():
             delivered_kwh=delivered,
             free_kwh=free_kwh,
             target_kwh=target_kwh,
+            enabled=enabled,
             wanted=wanted,
-            socket_on=plug.state,
+            socket_on=socket_on,
             reason=reason,
         )
 

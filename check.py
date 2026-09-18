@@ -10,10 +10,29 @@ import asyncio
 import base64
 import sys
 from datetime import datetime
+from pathlib import Path
 
+import history
 import main as watcher
 import solar_forecast
 from tapo_client import client, config, is_online
+
+
+def is_paused():
+    """Whether the watcher has been paused from its page, or None if unknown.
+
+    Read out of the logbook the watcher keeps, and only when there already is
+    one: this is a report, and running it on a machine that has never started
+    the watcher should not leave a database behind.
+    """
+    path = Path(watcher.HISTORY_DB)
+    if not path.exists():
+        return None
+    book = history.Logbook(path, watcher.HISTORY_RETENTION_DAYS)
+    try:
+        return not book.control(history.CONTROL_ENABLED, True)
+    finally:
+        book.close()
 
 
 def decode_nickname(value):
@@ -144,6 +163,10 @@ def check_decision(forecast_result, delivered=None):
     where = "cheap grid" if night else "free solar" if solar else "neither window"
     print("  now        : %s (%s)" % (now.strftime("%H:%M"), where))
     print("  strategy   : %s" % watcher.BOOST_STRATEGY)
+    if is_paused():
+        print("  PAUSED     : switching is paused from the dashboard. The verdict")
+        print("               below is still worked out, but the socket is left")
+        print("               exactly as it is until the page resumes it.")
 
     outlook, wet = forecast_result if forecast_result else (None, 0.0)
     print("  delivered  : %s" % (

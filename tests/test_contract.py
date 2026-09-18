@@ -117,6 +117,10 @@ class TheConfig(unittest.TestCase):
         for name in ("main.py", "tapo_client.py", "solar_forecast.py",
                      "dashboard.py", "history.py", "check.py"):
             found |= set(re.findall(r'config\(\s*"([A-Z0-9_]+)"', (ROOT / name).read_text()))
+        # .env is read by docker compose as well as by this program, so a key
+        # only the compose file substitutes is documented, not stale.
+        found |= set(re.findall(r"\$\{([A-Z][A-Z0-9_]+)\}",
+                                (ROOT / "docker-compose.yml").read_text()))
         return found
 
     def documented(self):
@@ -228,6 +232,66 @@ class TheDecisionUsesTheDayTotal(unittest.TestCase):
         for name in TheInverterIsNotRead.SOURCES + (".env.example",):
             self.assertNotIn("SOLAR_SURPLUS", (ROOT / name).read_text(),
                              "%s still carries a per-hour surplus gate" % name)
+
+
+class ThePageChangesExactlyOneThing(unittest.TestCase):
+    """The dashboard reads the logbook and writes one boolean: the pause.
+
+    It was purely a reader until the pause switch arrived, and the reason it
+    could be left unauthenticated on the LAN was that there was nothing to
+    write. There is one thing now, so what it may touch is checked by machine:
+    one route, one declared switch, and no way to reach the relay.
+    """
+
+    DASHBOARD = ast.parse((ROOT / "dashboard.py").read_text())
+    SOURCE = (ROOT / "dashboard.py").read_text()
+
+    def test_only_one_route_answers_a_post(self):
+        post = next(node for node in ast.walk(self.DASHBOARD)
+                    if isinstance(node, ast.FunctionDef) and node.name == "do_POST")
+        # Every route this handler compares itself against, which is not the
+        # same as every path string in it: "/" is how the path is normalised.
+        routes = set()
+        for node in ast.walk(post):
+            if isinstance(node, ast.Compare) and isinstance(node.left, ast.Name) \
+                    and node.left.id == "route":
+                routes |= {other.value for other in node.comparators
+                           if isinstance(other, ast.Constant)}
+        self.assertEqual(routes, {"/api/control"})
+
+    def test_it_writes_nothing_but_a_declared_switch(self):
+        written = set()
+        for call in calls(self.DASHBOARD, "set_control"):
+            name = call.args[0] if call.args else None
+            self.assertIsInstance(name, ast.Attribute,
+                                  "the switch being written is not a declared one")
+            written.add(name.attr)
+        self.assertEqual(written, {"CONTROL_ENABLED"})
+        self.assertIn(history.CONTROL_ENABLED, history.CONTROLS)
+
+    def test_the_server_cannot_reach_the_plug(self):
+        # The switch says whether the watcher may decide. It is not a relay,
+        # and nothing served over HTTP is allowed to become one.
+        for forbidden in ("set_state", "import tapo", "ApiClient", "PLUG_B_IP"):
+            self.assertNotIn(forbidden, self.SOURCE,
+                             "dashboard.py can reach the socket itself")
+
+    def test_the_page_posts_nowhere_else(self):
+        self.assertEqual(set(re.findall(r'post\(\s*"([^"]+)"', PAGE)), {"/api/control"})
+        # One writer, so a second fetch with a method is a second write.
+        self.assertEqual(PAGE.count("method:"), 1)
+
+    def test_a_paused_pass_is_recorded_like_any_other(self):
+        # Otherwise the record would show a socket that ignored the verdict
+        # with nothing to say why.
+        self.assertIn("enabled", history.SAMPLE_FIELDS)
+        self.assertIn("enabled", dashboard.CSV_COLUMNS)
+
+    def test_the_watcher_reads_the_switch_rather_than_being_told(self):
+        # main.py holds no copy of it: the logbook is the one place it lives,
+        # so the page and the loop cannot disagree about what it says.
+        self.assertIn("CONTROL_ENABLED", (ROOT / "main.py").read_text())
+        self.assertEqual(calls(MAIN, "set_control"), [])
 
 
 class TheDeployedDocument(unittest.TestCase):

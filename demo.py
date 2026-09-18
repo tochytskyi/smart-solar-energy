@@ -3,7 +3,8 @@
 Waiting for a night to pass to see whether a chart change worked is no way to
 build a page, so this fills a throwaway logbook with three days of plausible
 behaviour - a bright day and a dull one, boosts on both tariffs, a lost
-forecast, a failed switch - and serves it exactly as main.py would.
+forecast, a failed switch, a stretch with the watcher paused from the page -
+and serves it exactly as main.py would.
 
     python demo.py                  # http://127.0.0.1:8080, Ctrl-C to stop
     python demo.py 9000             # another port
@@ -94,11 +95,21 @@ def plan(outlook):
     return round(free, 2), round(target, 2), wet / float(len(outlook["hours"]))
 
 
+# The stretch the demo has the watcher paused for, in hours before now.
+# Anchored on now rather than on the clock so it is always inside the page's
+# default 24-hour view: the point of it is to be looked at.
+PAUSED_FROM, PAUSED_TO = 9, 3
+
+
 def fill(book):
     """Three days of five-minute samples, plus the log lines that go with them."""
     delivered, day_seen = 0.0, None
     outlook = ahead = None
+    relay = False               # what the socket is actually doing
+    was_enabled = True
     moment = time.time() - DAYS * 86400
+    paused_from = time.time() - PAUSED_FROM * 3600
+    paused_to = time.time() - PAUSED_TO * 3600
 
     while moment < time.time():
         local = datetime.fromtimestamp(moment)
@@ -122,21 +133,36 @@ def fill(book):
         row = judged["hours"][int(hour) - SOLAR_FROM] if solar else None
 
         if night:
-            on = delivered < target
+            wanted = delivered < target
             reason = ("%.1f kWh sun, house takes %.1f - %.1f kWh reaches the load free"
                       % (judged["pv_kwh"], SETTINGS["house_daytime_kwh"], free))
             reason += (" - buying %.1f kWh of it from the grid" % target if target
                        else " - covers %.1f kWh, waiting for sun" % SETTINGS["device_daily_kwh"])
         elif solar:
-            on = delivered < SETTINGS["device_daily_kwh"]
+            wanted = delivered < SETTINGS["device_daily_kwh"]
             reason = ("%.1f of %.1f kWh so far - topping up from roof and grid"
                       % (delivered, SETTINGS["device_daily_kwh"]))
         else:
-            on, reason = False, "outside both windows"
+            wanted, reason = False, "outside both windows"
 
         if delivered >= SETTINGS["device_daily_kwh"]:
-            on, reason = False, "load already had its %.1f kWh today" % SETTINGS["device_daily_kwh"]
-        if on:
+            wanted = False
+            reason = "load already had its %.1f kWh today" % SETTINGS["device_daily_kwh"]
+
+        # Paused, the verdict is still worked out and recorded; only the relay
+        # is left alone, so it keeps whatever it was doing.
+        enabled = not (paused_from <= moment < paused_to)
+        if enabled:
+            relay = wanted
+        else:
+            reason = "paused from the page - would be %s: %s" % (
+                "ON" if wanted else "off", reason)
+        if enabled != was_enabled:
+            book.event("resumed from the page - switching the socket again" if enabled
+                       else "PAUSED from the page - the socket is left exactly as it is",
+                       "info" if enabled else "warn", "decision", at=moment)
+            was_enabled = enabled
+        if relay:
             delivered += SETTINGS["device_power_kw"] * STEP / 3600.0
 
         book.sample(
@@ -146,13 +172,13 @@ def fill(book):
             cloud_cover=round(judged["cloud_cover"]), rain_mm=judged["rain_mm"],
             wet_fraction=wet,
             plug_power_w=round(SETTINGS["device_power_kw"] * 1000 + random.random() * 120)
-                         if on else 0,
+                         if relay else 0,
             delivered_kwh=round(delivered, 2),
             free_kwh=free, target_kwh=target,
-            wanted=on, socket_on=on, reason=reason,
+            enabled=enabled, wanted=wanted, socket_on=relay, reason=reason,
         )
 
-        if local.minute == 0 and solar:
+        if local.minute == 0 and solar and enabled:
             book.event("roof %.1f kW this hour, %.1f of %.1f kWh into the load"
                        % (row["kw"], delivered, SETTINGS["device_daily_kwh"]),
                        "info", "forecast", at=moment)
