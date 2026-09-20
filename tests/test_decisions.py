@@ -219,6 +219,70 @@ class SolarDecision(unittest.TestCase):
         self.assertIn("no meter reading", why)
 
 
+class TheHoursAllowance(unittest.TestCase):
+    """One ration, read off the meter and off the clock, first to fill wins.
+
+    The clock is here because the load has its own thermostat. On a day nobody
+    drew hot water it cuts out, the plug measures almost nothing, and a
+    kWh-only brake never releases - the socket would sit closed for the whole
+    window waiting for energy the load is never going to take.
+    """
+
+    def test_the_clock_ends_the_day_though_the_meter_is_far_short(self):
+        on, why = main.decide_solar(1.2, 3.0)
+        self.assertFalse(on)
+        self.assertIn("3.0 of its 3.0 h", why)
+
+    def test_just_under_the_allowance_it_keeps_going(self):
+        on, why = main.decide_solar(1.2, 2.9)
+        self.assertTrue(on)
+        self.assertIn("2.9 of 3.0 h", why)
+
+    def test_the_allowance_is_inclusive_like_the_budget(self):
+        self.assertFalse(main.decide_solar(0.0, 3.0)[0])
+        self.assertTrue(main.decide_solar(0.0, 2.999)[0])
+
+    def test_the_meter_still_ends_the_day_first_when_it_fills_first(self):
+        # The load that does draw its full rating stops on kWh, as before.
+        on, why = main.decide_solar(6.0, 0.5)
+        self.assertFalse(on)
+        self.assertIn("already had", why)
+
+    def test_one_ration_covers_both_windows(self):
+        # Same accounting as the meter: hours the night spent are hours the
+        # day does not get again. outlook(0.0) is a day the night must buy
+        # outright, so only the allowance can be what stops it.
+        on, why = main.decide_night(outlook(0.0), 0.0, 1.2, 3.0)
+        self.assertFalse(on)
+        self.assertIn("3.0 of its 3.0 h", why)
+
+    def test_the_clock_answers_when_the_meter_cannot(self):
+        # The hours are checked before the meter is missed, so a socket that
+        # has had its allowance stays off rather than being held off for the
+        # unrelated reason that nothing could be read.
+        on, why = main.decide_solar(None, 3.0)
+        self.assertFalse(on)
+        self.assertIn("3.0 of its 3.0 h", why)
+
+    def test_an_unreadable_meter_still_holds_off_below_the_allowance(self):
+        # Unchanged: the clock bounds a blind run but does not license one.
+        on, why = main.decide_solar(None, 1.0)
+        self.assertFalse(on)
+        self.assertIn("no meter reading", why)
+
+    def test_zero_hours_leaves_the_meter_alone_in_charge(self):
+        with constants(DEVICE_DAILY_HOURS=0.0):
+            on, _ = main.decide_solar(1.2, 99.0)
+        self.assertTrue(on)
+
+    def test_without_a_meter_at_all_the_clock_can_run_the_window(self):
+        # A P100 has no meter. With only an allowance set there is nothing to
+        # read, and the clock is the whole brake.
+        with constants(DEVICE_DAILY_KWH=0.0):
+            self.assertTrue(main.decide_solar(None, 2.0)[0])
+            self.assertFalse(main.decide_solar(None, 3.0)[0])
+
+
 class NoDailyBudget(unittest.TestCase):
     """DEVICE_DAILY_KWH of 0 means 'no budget', not 'a budget of nothing'."""
 

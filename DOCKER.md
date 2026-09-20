@@ -198,6 +198,9 @@ One plug is controlled: `PLUG_B_IP`. The load on it owes itself
 plug's own meter keeps one running total, so **both windows share one daily
 budget** - whatever the night buys, the afternoon does not repeat.
 
+That ration is measured two ways, and **the first of them to fill ends the
+day**: `DEVICE_DAILY_KWH` off the meter, or `DEVICE_DAILY_HOURS` on the clock.
+
 | Window | Source | Runs when |
 |---|---|---|
 | `NIGHT_START`-`NIGHT_END` (00:00-07:00) | cheap grid | today's sun will not cover the load |
@@ -218,6 +221,7 @@ of it:
 ```
 free        = clamp(forecast kWh for the day - HOUSE_DAYTIME_KWH, 0 .. DEVICE_DAILY_KWH)
 buy tonight = DEVICE_DAILY_KWH - free
+day is done = meter >= DEVICE_DAILY_KWH  or  socket on for >= DEVICE_DAILY_HOURS
 ```
 
 `HOUSE_DAYTIME_KWH` is what the rest of the house takes out of the roof across
@@ -245,9 +249,29 @@ rest.
 Because both windows read the same meter, the night's purchase counts against
 this one. A night that bought 2 of the 6 kWh leaves the day to find 4.
 
-**The meter is the only brake on this window.** If it cannot be read the
-socket is held off rather than run blind - the forecast used to be a second
-opinion here and no longer is.
+If the meter cannot be read the socket is held off rather than run blind - the
+forecast used to be a second opinion here and no longer is.
+
+### The clock: the brake for the day nobody used any water
+
+`DEVICE_DAILY_HOURS` is the same ration counted in hours the socket was
+actually closed, and it stops either window. It exists because the load has its
+own thermostat: on a day nobody drew hot water the element cuts out, the plug
+measures almost nothing, and a kWh-only brake never releases - the socket would
+sit closed for the entire window waiting for energy the load is never going to
+take.
+
+Set it to `DEVICE_DAILY_KWH / DEVICE_POWER_KW` to mean the same ration both
+ways - 6 kWh through a 2 kW load is 3 h - so the clock only bites on a day the
+meter has stalled. Lower it to cap the running time harder; `0` switches it off
+and leaves the meter alone in charge.
+
+The hours are integrated from the logbook, not counted in the process, so a
+watcher restarted mid-window knows the socket has already had two of its three
+hours. They are checked before the meter is missed, so a socket that has had
+its allowance stays off even when the plug has gone unreadable. An unreadable
+**logbook** reads as zero hours, which leaves the meter governing on its own -
+a broken card must not be the thing that stops the load heating.
 
 ### Why the day total and not the hourly curve
 

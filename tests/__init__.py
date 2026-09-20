@@ -49,7 +49,9 @@ tapo_client.load_env = lambda *args, **kwargs: None
 # The watcher under test. Round numbers on purpose: a 6 kWh/day load and an
 # 8 kWh house, so a day's forecast total minus 8 is what the load gets free,
 # and the night buys 6 minus that - every expected number here is one
-# subtraction from the day's kWh.
+# subtraction from the day's kWh. The 3 h allowance is the same ration read off
+# the clock instead: 3 h x 2 kW = the same 6 kWh, so a test that trips one
+# brake at its limit is at the other's limit too unless it says otherwise.
 ENV = {
     "PLUG_B_IP": "10.0.0.5",
     "CHECK_INTERVAL": "60",
@@ -62,6 +64,7 @@ ENV = {
     "BOOST_STRATEGY": "forecast",
 
     "DEVICE_DAILY_KWH": "6",
+    "DEVICE_DAILY_HOURS": "3",
     "DEVICE_POWER_KW": "2.0",
     "HOUSE_DAYTIME_KWH": "8",
 

@@ -441,8 +441,9 @@ function renderCards(data) {
      and a row older than the column itself simply has none. */
   const paused = s.enabled === 0 || s.enabled === false;
   const target = set.device_daily_kwh || 0;
+  const hoursCap = set.device_daily_hours || 0;
   const delivered = s.delivered_kwh;
-  const deliveredHours = s.delivered_hours;
+  const ranHours = s.ran_hours;
   const phase = s.phase || "idle";
   const phaseLabel = { night: "cheap grid window", solar: "free solar window" }[phase]
     || "outside both windows";
@@ -457,9 +458,11 @@ function renderCards(data) {
     ${target > 0 ? `
       <div class="bar amber"><i style="width:${Math.min(100, 100 * (delivered || 0) / target)}%"></i></div>
       <div class="note">${delivered == null ? "meter unavailable"
-        : n1(delivered) + " of " + n1(target) + " kWh today"}</div>
-      <div class="note">${deliveredHours == null ? ""
-        : n1(deliveredHours, " h") + " of running time"}</div>` : ""}
+        : n1(delivered) + " of " + n1(target) + " kWh today"}</div>` : ""}
+    ${hoursCap > 0 ? `
+      <div class="bar amber"><i style="width:${Math.min(100, 100 * (ranHours || 0) / hoursCap)}%"></i></div>
+      <div class="note">${ranHours == null ? "on-time unknown"
+        : n1(ranHours) + " of " + n1(hoursCap) + " h on today"}</div>` : ""}
   `));
 
   /* The whole forecast decision, in one number: how much of the day's budget

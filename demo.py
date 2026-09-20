@@ -29,7 +29,7 @@ SETTINGS = {
     "sample_interval": 300, "monitor_daytime": True,
     "night_start": "00:00", "night_end": "07:00",
     "solar_start": "10:00", "solar_end": "18:00",
-    "device_daily_kwh": 6, "device_power_kw": 2.0,
+    "device_daily_kwh": 6, "device_daily_hours": 3, "device_power_kw": 2.0,
     "house_daytime_kwh": 8,
 }
 STEP = 300          # the default HISTORY_SAMPLE_INTERVAL
@@ -45,6 +45,21 @@ def is_bright(day):
     load something, rather than one the night has to buy outright.
     """
     return (date.today() - day).days % 2 == 0
+
+
+def is_lazy(day):
+    """Yesterday is the day nobody drew any hot water.
+
+    The load's own thermostat cuts out, so the socket is closed but the meter
+    barely moves - the kWh budget is never going to fill, and the hours
+    allowance is the only thing that ends the run. That is the whole reason
+    the allowance exists, so the page has to have a day showing it.
+    """
+    return (date.today() - day).days == 1
+
+
+# What the load actually draws on such a day, as a fraction of its rating.
+LAZY_DUTY = 0.45
 
 
 def curve(day, bright):
@@ -103,7 +118,7 @@ PAUSED_FROM, PAUSED_TO = 9, 3
 
 def fill(book):
     """Three days of five-minute samples, plus the log lines that go with them."""
-    delivered, day_seen = 0.0, None
+    delivered, ran_hours, day_seen = 0.0, 0.0, None
     outlook = ahead = None
     relay = False               # what the socket is actually doing
     was_enabled = True
@@ -115,7 +130,7 @@ def fill(book):
         local = datetime.fromtimestamp(moment)
         hour = local.hour + local.minute / 60.0
         if day_seen != local.date():
-            day_seen, delivered = local.date(), 0.0
+            day_seen, delivered, ran_hours = local.date(), 0.0, 0.0
             outlook = curve(local.date(), is_bright(local.date()))
             ahead = curve(local.date() + timedelta(days=1),
                           is_bright(local.date() + timedelta(days=1)))
@@ -140,12 +155,18 @@ def fill(book):
                        else " - covers %.1f kWh, waiting for sun" % SETTINGS["device_daily_kwh"])
         elif solar:
             wanted = delivered < SETTINGS["device_daily_kwh"]
-            reason = ("%.1f of %.1f kWh so far - topping up from roof and grid"
-                      % (delivered, SETTINGS["device_daily_kwh"]))
+            reason = ("%.1f of %.1f kWh, %.1f of %.1f h so far - topping up from roof and grid"
+                      % (delivered, SETTINGS["device_daily_kwh"],
+                         ran_hours, SETTINGS["device_daily_hours"]))
         else:
             wanted, reason = False, "outside both windows"
 
-        if delivered >= SETTINGS["device_daily_kwh"]:
+        # Either measure of the one ration ends the day, whichever fills first.
+        if ran_hours >= SETTINGS["device_daily_hours"]:
+            wanted = False
+            reason = "socket has been on %.1f of its %.1f h today" % (
+                ran_hours, SETTINGS["device_daily_hours"])
+        elif delivered >= SETTINGS["device_daily_kwh"]:
             wanted = False
             reason = "load already had its %.1f kWh today" % SETTINGS["device_daily_kwh"]
 
@@ -162,8 +183,10 @@ def fill(book):
                        else "PAUSED from the page - the socket is left exactly as it is",
                        "info" if enabled else "warn", "decision", at=moment)
             was_enabled = enabled
+        duty = LAZY_DUTY if is_lazy(local.date()) else 1.0
         if relay:
-            delivered += SETTINGS["device_power_kw"] * STEP / 3600.0
+            delivered += SETTINGS["device_power_kw"] * duty * STEP / 3600.0
+            ran_hours += STEP / 3600.0
 
         book.sample(
             at=moment, phase="night" if night else "solar" if solar else "idle",
@@ -171,10 +194,10 @@ def fill(book):
             pv_forecast_kwh=judged["pv_kwh"], peak_kw=judged["peak_kw"],
             cloud_cover=round(judged["cloud_cover"]), rain_mm=judged["rain_mm"],
             wet_fraction=wet,
-            plug_power_w=round(SETTINGS["device_power_kw"] * 1000 + random.random() * 120)
+            plug_power_w=round(SETTINGS["device_power_kw"] * duty * 1000 + random.random() * 120)
                          if relay else 0,
             delivered_kwh=round(delivered, 2),
-            delivered_hours=round(delivered / SETTINGS["device_power_kw"], 2),
+            ran_hours=round(ran_hours, 3),
             free_kwh=free, target_kwh=target,
             enabled=enabled, wanted=wanted, socket_on=relay, reason=reason,
         )

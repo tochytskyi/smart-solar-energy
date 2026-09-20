@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS samples (
     wet_fraction        REAL,
     plug_power_w        REAL,
     delivered_kwh       REAL,
-    delivered_hours     REAL,
+    ran_hours           REAL,
     free_kwh            REAL,
     target_kwh          REAL,
     enabled             INTEGER,
@@ -84,7 +84,7 @@ CREATE TABLE IF NOT EXISTS control (
 SAMPLE_FIELDS = (
     "phase", "strategy", "pv_forecast_kwh", "peak_kw",
     "cloud_cover", "rain_mm", "wet_fraction", "plug_power_w", "delivered_kwh",
-    "delivered_hours", "free_kwh", "target_kwh", "enabled", "wanted", "socket_on", "reason",
+    "ran_hours", "free_kwh", "target_kwh", "enabled", "wanted", "socket_on", "reason",
 )
 
 LEVELS = ("info", "warn", "error")
@@ -334,6 +334,39 @@ class Logbook:
             if row.get("hours"):
                 row["hours"] = json.loads(row["hours"])
         return rows
+
+    def on_hours_today(self, now=None):
+        """How long the socket has been on since local midnight, in hours.
+
+        Integrated from the samples rather than counted in rows, like days():
+        the sample interval is not constant, and a restart leaves a hole that
+        is not socket time. Reading it back off the disk rather than keeping a
+        counter in the process is the point - a watcher restarted at 3 am has
+        to know the socket already had two of its hours.
+
+        The stretch since the last sample counts too, so a run in progress is
+        measured to the second rather than to the last write; without it a
+        quiet five-minute sample interval would let the allowance overrun.
+
+        A logbook that cannot be read answers 0.0, which leaves the meter as
+        the only brake - the same bargain as everywhere else in here, where a
+        full card must not be the thing that stops the socket being switched.
+        """
+        now = now or time.time()
+        midnight = time.mktime(time.localtime(now)[:3] + (0, 0, 0, 0, 0, -1))
+        rows = self._execute(lambda conn: [
+            dict(row) for row in conn.execute(
+                "SELECT ts, socket_on FROM samples WHERE ts >= ? ORDER BY ts", (midnight,))
+        ], default=[])
+
+        seconds = 0.0
+        for index, row in enumerate(rows):
+            if not row["socket_on"]:
+                continue
+            gap = (rows[index + 1]["ts"] if index + 1 < len(rows) else now) - row["ts"]
+            if 0 < gap <= MAX_ATTRIBUTED_GAP:
+                seconds += gap
+        return seconds / 3600.0
 
     def days(self, count=14):
         """Per-day totals: how long the socket ran, what it took, how the day looked.

@@ -16,6 +16,12 @@ windows share one daily budget:
                the load has had its DEVICE_DAILY_KWH, on whatever mix of roof
                and grid the day happens to be giving.
 
+That ration is measured two ways and the first to fill ends the day:
+DEVICE_DAILY_KWH off the meter, or DEVICE_DAILY_HOURS on the clock. The clock
+is there because the load has its own thermostat - on a day nobody drew hot
+water it cuts out, the meter barely moves, and a kWh-only brake would leave
+the socket closed for the whole window waiting for energy it will never take.
+
 Outside both windows the socket stays off.
 
 All of that can be suspended from the page. Paused, the watcher still reads
@@ -62,6 +68,14 @@ BOOST_STRATEGY = config("BOOST_STRATEGY", "forecast", required=False).strip().lo
 DEVICE_DAILY_KWH = float(config("DEVICE_DAILY_KWH", "6", required=False))
 DEVICE_POWER_KW = float(config("DEVICE_POWER_KW", "2.0", required=False))
 HOUSE_DAYTIME_KWH = float(config("HOUSE_DAYTIME_KWH", "8", required=False))
+
+# The same daily ration measured by the clock instead of the meter, and the
+# reason there are two: the load has its own thermostat. On a day nobody drew
+# any hot water it cuts out, the plug measures almost nothing, and a meter-only
+# brake never releases - the socket sits closed for the whole window waiting for
+# kWh that are never going to arrive. Whichever measure fills first ends the day.
+# 0 switches this brake off and leaves the meter alone in charge.
+DEVICE_DAILY_HOURS = float(config("DEVICE_DAILY_HOURS", "3", required=False))
 
 # How long the cheap window lasts. Only used to warn at startup when it is too
 # short to deliver the budget at DEVICE_POWER_KW - the night cannot buy 6 kWh
@@ -130,6 +144,7 @@ def settings():
         "solar_start": SOLAR_START.strftime("%H:%M"),
         "solar_end": SOLAR_END.strftime("%H:%M"),
         "device_daily_kwh": DEVICE_DAILY_KWH,
+        "device_daily_hours": DEVICE_DAILY_HOURS,
         "device_power_kw": DEVICE_POWER_KW,
         "house_daytime_kwh": HOUSE_DAYTIME_KWH,
     }
@@ -300,11 +315,42 @@ def night_target_kwh(outlook):
     return min(DEVICE_DAILY_KWH, max(0.0, DEVICE_DAILY_KWH - free_solar_kwh(outlook)))
 
 
-def decide_night(outlook, wet_fraction, delivered):
+def budget_spent(delivered, ran_hours):
+    """(True, why) once the day's ration is used up, by either measure.
+
+    Two readings of one ration, and the first to fill ends the day for both
+    windows. The meter is the honest one while the load is actually drawing;
+    the clock is what stops the socket sitting closed through a whole window
+    on a day the load's own thermostat keeps cutting out, because nobody drew
+    any hot water and the kWh are never going to arrive.
+
+    The hours are checked first: they are the measure that still answers when
+    the meter cannot be read at all.
+    """
+    if DEVICE_DAILY_HOURS > 0 and ran_hours >= DEVICE_DAILY_HOURS:
+        return True, "socket has been on %.1f of its %.1f h today" % (
+            ran_hours, DEVICE_DAILY_HOURS)
+    if DEVICE_DAILY_KWH > 0 and delivered is not None and delivered >= DEVICE_DAILY_KWH:
+        return True, "load already had its %.1f kWh today" % DEVICE_DAILY_KWH
+    return False, None
+
+
+def spent_so_far(delivered, ran_hours):
+    """How much of the ration is gone, by whichever measures are switched on."""
+    parts = []
+    if DEVICE_DAILY_KWH > 0 and delivered is not None:
+        parts.append("%.1f of %.1f kWh" % (delivered, DEVICE_DAILY_KWH))
+    if DEVICE_DAILY_HOURS > 0:
+        parts.append("%.1f of %.1f h" % (ran_hours, DEVICE_DAILY_HOURS))
+    return ", ".join(parts)
+
+
+def decide_night(outlook, wet_fraction, delivered, ran_hours=0.0):
     """(socket on?, why) inside the cheap-grid window."""
     delivered = delivered or 0.0
-    if delivered >= DEVICE_DAILY_KWH > 0:
-        return False, "load already had its %.1f kWh today" % DEVICE_DAILY_KWH
+    spent, why = budget_spent(delivered, ran_hours)
+    if spent:
+        return False, why
 
     if outlook is None:
         return False, "no forecast - holding off"
@@ -328,27 +374,29 @@ def decide_night(outlook, wet_fraction, delivered):
     return True, context + " - buying %.1f kWh of it from the grid" % target
 
 
-def decide_solar(delivered):
+def decide_solar(delivered, ran_hours=0.0):
     """(socket on?, why) inside the solar window.
 
     No forecast and no threshold: from SOLAR_START the socket simply runs
-    until the meter says the load has had its day. Whatever the roof is making
-    goes into it first and the grid covers the rest, which is the same bargain
-    the night already sized - it just no longer matters which hours the sun
-    turns up in.
+    until the load has had its day, by the meter or by the clock. Whatever the
+    roof is making goes into it first and the grid covers the rest, which is
+    the same bargain the night already sized - it just no longer matters which
+    hours the sun turns up in.
 
-    The meter is now the only thing that stops this window, so an unreadable
-    one has to mean off. The old daytime branch needed the forecast to say yes
-    before it ran at all; this one would otherwise heat until sunset.
+    A meter that cannot be read still means off while a kWh budget is set. The
+    clock would now bound a blind run to DEVICE_DAILY_HOURS, but heating on no
+    measurement at all is a bigger change than this window needs, and the old
+    daytime branch would otherwise heat until sunset.
     """
-    if DEVICE_DAILY_KWH <= 0:
+    if DEVICE_DAILY_KWH <= 0 and DEVICE_DAILY_HOURS <= 0:
         return True, "no daily budget set - running the whole window"
-    if delivered is None:
+    spent, why = budget_spent(delivered, ran_hours)
+    if spent:
+        return False, why
+    if DEVICE_DAILY_KWH > 0 and delivered is None:
         return False, "no meter reading - holding off rather than heating blind"
-    if delivered >= DEVICE_DAILY_KWH:
-        return False, "load already had its %.1f kWh today" % DEVICE_DAILY_KWH
-    return True, "%.1f of %.1f kWh so far - topping up from roof and grid" % (
-        delivered, DEVICE_DAILY_KWH)
+    return True, "%s so far - topping up from roof and grid" % spent_so_far(
+        delivered, ran_hours)
 
 
 class Recorder:
@@ -456,7 +504,8 @@ async def main():
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop.set)
 
-    log("controlling %s only, %.1f kWh/day budget" % (PLUG_IP, DEVICE_DAILY_KWH))
+    log("controlling %s only, %.1f kWh/day budget, %.1f h/day allowance"
+        % (PLUG_IP, DEVICE_DAILY_KWH, DEVICE_DAILY_HOURS))
     if not LOGBOOK.control(history.CONTROL_ENABLED, True):
         log("still PAUSED from an earlier session - the socket will not be switched"
             " until the page resumes it", "warn", "decision")
@@ -501,11 +550,16 @@ async def main():
             drawing = await plug.power_w()
             outlook, wet = await look_ahead(forecast, now)
 
+        # How long the relay has already been closed today, read back off the
+        # logbook rather than counted in this process, so a restart mid-window
+        # does not hand the load a fresh allowance.
+        ran_hours = LOGBOOK.on_hours_today()
+
         if night:
-            wanted, reason = decide_night(outlook, wet, delivered)
+            wanted, reason = decide_night(outlook, wet, delivered, ran_hours)
         elif solar:
-            # The day window needs no forecast at all - only the meter.
-            wanted, reason = decide_solar(delivered)
+            # The day window needs no forecast at all - only the meter and the clock.
+            wanted, reason = decide_solar(delivered, ran_hours)
         else:
             wanted, reason = False, "outside both windows"
 
@@ -534,12 +588,10 @@ async def main():
             socket_on = await plug.is_on()
         was_enabled = enabled
 
-        free_kwh = target_kwh = delivered_hours = None
+        free_kwh = target_kwh = None
         if outlook is not None and BOOST_STRATEGY == "forecast":
             free_kwh = free_solar_kwh(outlook)
             target_kwh = night_target_kwh(outlook)
-        if delivered is not None and DEVICE_POWER_KW > 0:
-            delivered_hours = delivered / DEVICE_POWER_KW
         recorder.record(
             phase="night" if night else "solar" if solar else "idle",
             strategy=BOOST_STRATEGY,
@@ -550,7 +602,7 @@ async def main():
             wet_fraction=wet if outlook else None,
             plug_power_w=drawing,
             delivered_kwh=delivered,
-            delivered_hours=delivered_hours,
+            ran_hours=ran_hours,
             free_kwh=free_kwh,
             target_kwh=target_kwh,
             enabled=enabled,

@@ -80,7 +80,9 @@ python -m unittest tests.test_decisions -v
 The constants the tests decide against are fixed in `tests/__init__.py`, not
 read from `.env`: 6 kWh/day into a 2 kW load and an 8 kWh house - so every
 expected number is one subtraction from the day's forecast kWh and can be
-worked out by hand. `tests/test_contract.py` is the standing rule below,
+worked out by hand. The 3 h allowance is that same ration on the clock, so a
+test standing at one brake's limit is standing at the other's too unless it
+says so. `tests/test_contract.py` is the standing rule below,
 checked by machine - it reads the source and fails when a recorded number
 never reaches the schema, the CSV or the page.
 
@@ -130,6 +132,15 @@ then crops the image, so `--window-size=400,...` shows a false clip - ask for
   switched. Keep it that way for anything you add there.
 - **The plug's own meter is the single daily budget.** Both windows read it, so
   neither repeats what the other already delivered. Do not add a second counter.
+- **That budget has two brakes, and the first to bite ends the day.**
+  `DEVICE_DAILY_KWH` off the meter, `DEVICE_DAILY_HOURS` off the clock. The
+  clock is there because the load has its own thermostat: on a day nobody drew
+  hot water it cuts out, the meter barely moves, and a kWh-only brake holds the
+  socket closed for the whole window waiting for energy that is never taken.
+  The hours come from `Logbook.on_hours_today`, integrated from the samples, so
+  a restart mid-window does not hand the load a fresh allowance - never replace
+  it with a counter in the process. They are checked before the meter is
+  missed, so a spent allowance beats an unreadable plug.
 - **The forecast is one number a day, and only the night reads it.**
   `free_solar_kwh` is `clamp(pv_kwh - HOUSE_DAYTIME_KWH, 0 .. DEVICE_DAILY_KWH)`
   and nothing else. There was an hourly version that predicted which hours
@@ -138,10 +149,12 @@ then crops the image, so `--window-size=400,...` shows a false clip - ask for
   and the night had already decided not to buy. The day total can still be
   wrong - a day under forecast tops up at the day tariff - but it fails
   towards a bigger bill rather than a cold load. Keep it that way.
-- **The meter is the only brake on the day window.** `decide_solar` runs from
-  `SOLAR_START` until the meter says the budget is full, so an unreadable meter
-  has to mean off. It used to need the forecast's permission to run at all;
-  that second opinion is gone.
+- **The forecast is still no part of the day window.** `decide_solar` runs from
+  `SOLAR_START` until the meter or the clock says the ration is spent, and an
+  unreadable meter still means off while a kWh budget is set. It used to need
+  the forecast's permission to run at all; that second opinion is gone and is
+  not to come back - `tests/test_contract.py::TheDecisionUsesTheDayTotal`
+  pins the arguments `decide_solar` may take.
 
 ## Things that have bitten
 

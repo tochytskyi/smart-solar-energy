@@ -222,11 +222,16 @@ class TheDecisionUsesTheDayTotal(unittest.TestCase):
                          "free_solar_kwh is walking the curve again")
 
     def test_the_day_window_takes_no_forecast_at_all(self):
+        # Widened once, deliberately: the day window is now the meter and the
+        # clock, because a load whose thermostat cuts out never fills the kWh
+        # budget and a meter-only brake never releases. What this still
+        # forbids is the forecast - an outlook, a curve or a wet fraction
+        # reaching this window is the failure it was written for.
         decide = next(node for node in ast.walk(MAIN)
                       if isinstance(node, ast.FunctionDef) and node.name == "decide_solar")
-        self.assertEqual([arg.arg for arg in decide.args.args], ["delivered"],
+        self.assertEqual([arg.arg for arg in decide.args.args], ["delivered", "ran_hours"],
                          "decide_solar has grown an argument; the day window is"
-                         " the meter and nothing else")
+                         " the meter and the clock, and nothing else")
 
     def test_no_surplus_thresholds_are_left_anywhere(self):
         for name in TheInverterIsNotRead.SOURCES + (".env.example",):
@@ -300,8 +305,8 @@ class TheDeployedDocument(unittest.TestCase):
     def test_it_mentions_every_window_and_threshold(self):
         docker = (ROOT / "DOCKER.md").read_text()
         for key in ("NIGHT_START", "NIGHT_END", "SOLAR_START", "SOLAR_END",
-                    "DEVICE_DAILY_KWH", "DEVICE_POWER_KW", "HOUSE_DAYTIME_KWH",
-                    "BOOST_STRATEGY"):
+                    "DEVICE_DAILY_KWH", "DEVICE_DAILY_HOURS", "DEVICE_POWER_KW",
+                    "HOUSE_DAYTIME_KWH", "BOOST_STRATEGY"):
             self.assertIn(key, docker)
 
 

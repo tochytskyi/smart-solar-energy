@@ -285,6 +285,55 @@ class Days(Booked):
         self.assertIsNone(day["delivered_kwh"])
 
 
+class OnHoursToday(Booked):
+    """Today's socket time, which is one of the two brakes on the ration.
+
+    It is read back off the disk rather than counted in the watcher's memory,
+    so a restart mid-window does not hand the load a fresh allowance.
+    """
+
+    def test_it_integrates_the_stretches_the_socket_was_on(self):
+        now = noon_today()
+        for offset in range(3600, 0, -300):
+            self.book.sample(at=now - offset, socket_on=True)
+        self.assertAlmostEqual(self.book.on_hours_today(now), 1.0, places=3)
+
+    def test_an_off_socket_buys_no_hours(self):
+        now = noon_today()
+        for offset in range(3600, 0, -300):
+            self.book.sample(at=now - offset, socket_on=False)
+        self.assertEqual(self.book.on_hours_today(now), 0.0)
+
+    def test_a_run_in_progress_counts_to_the_second(self):
+        # Not to the last write. Nothing changing is only recorded every
+        # HISTORY_SAMPLE_INTERVAL, so an allowance measured to the last row
+        # would overrun by up to that interval every single day.
+        now = noon_today()
+        self.book.sample(at=now - 600, socket_on=True)
+        self.assertAlmostEqual(self.book.on_hours_today(now), 600 / 3600.0, places=3)
+
+    def test_a_restart_hole_is_not_socket_time(self):
+        # The row before the hole says the socket was on, but nothing watched
+        # those two hours, so they are not counted as anything.
+        now = noon_today()
+        self.book.sample(at=now - 7200, socket_on=True)
+        self.book.sample(at=now - 300, socket_on=True)
+        self.assertAlmostEqual(self.book.on_hours_today(now), 300 / 3600.0, places=3)
+
+    def test_a_watcher_that_died_does_not_keep_accruing(self):
+        # Otherwise a process killed with the socket on would spend the whole
+        # allowance while nothing was running at all.
+        now = noon_today()
+        self.book.sample(at=now - 7200, socket_on=True)
+        self.assertEqual(self.book.on_hours_today(now), 0.0)
+
+    def test_yesterday_does_not_count_against_today(self):
+        now = noon_today()
+        self.book.sample(at=now - 86400, socket_on=True)
+        self.book.sample(at=now - 86400 + 300, socket_on=True)
+        self.assertEqual(self.book.on_hours_today(now), 0.0)
+
+
 class Switches(Booked):
     """The one thing the page may write, and what a broken one answers."""
 
@@ -514,6 +563,14 @@ class BrokenDisk(unittest.TestCase):
             self.assertEqual(book.days(), [])
             self.assertIsNone(book.latest_sample())
             self.assertIsNone(book.latest_forecast())
+
+    def test_an_unreadable_card_leaves_the_meter_alone_in_charge(self):
+        # No hours can be read, so the clock brake simply is not there and the
+        # meter governs on its own - the same bargain as the pause switch.
+        # The alternative, answering "the allowance is spent", would let a
+        # broken card stop the load heating at all.
+        with quiet():
+            self.assertEqual(history.Logbook(self.path).on_hours_today(), 0.0)
 
     def test_the_trouble_is_reported_once_not_every_minute(self):
         with quiet() as log:

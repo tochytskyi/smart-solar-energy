@@ -45,14 +45,7 @@ services:
 
     command:
       - "http"
-      - "--domain=${NGROK_DOMAIN}"
-      - "host.docker.internal:8080"
-
-    ports:
-      - "4040:4040"
+      - "--basic-auth=${NGROK_BASIC_AUTH}"
+      - "${INTERNAL_IP}:8080"
 
     restart: unless-stopped
-
-    # Only start if NGROK_AUTHTOKEN is set
-    profiles:
-      - ngrok
