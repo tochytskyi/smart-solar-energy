@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS samples (
     wet_fraction        REAL,
     plug_power_w        REAL,
     delivered_kwh       REAL,
+    delivered_hours     REAL,
     free_kwh            REAL,
     target_kwh          REAL,
     enabled             INTEGER,
@@ -83,7 +84,7 @@ CREATE TABLE IF NOT EXISTS control (
 SAMPLE_FIELDS = (
     "phase", "strategy", "pv_forecast_kwh", "peak_kw",
     "cloud_cover", "rain_mm", "wet_fraction", "plug_power_w", "delivered_kwh",
-    "free_kwh", "target_kwh", "enabled", "wanted", "socket_on", "reason",
+    "delivered_hours", "free_kwh", "target_kwh", "enabled", "wanted", "socket_on", "reason",
 )
 
 LEVELS = ("info", "warn", "error")

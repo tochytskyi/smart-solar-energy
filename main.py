@@ -534,10 +534,12 @@ async def main():
             socket_on = await plug.is_on()
         was_enabled = enabled
 
-        free_kwh = target_kwh = None
+        free_kwh = target_kwh = delivered_hours = None
         if outlook is not None and BOOST_STRATEGY == "forecast":
             free_kwh = free_solar_kwh(outlook)
             target_kwh = night_target_kwh(outlook)
+        if delivered is not None and DEVICE_POWER_KW > 0:
+            delivered_hours = delivered / DEVICE_POWER_KW
         recorder.record(
             phase="night" if night else "solar" if solar else "idle",
             strategy=BOOST_STRATEGY,
@@ -548,6 +550,7 @@ async def main():
             wet_fraction=wet if outlook else None,
             plug_power_w=drawing,
             delivered_kwh=delivered,
+            delivered_hours=delivered_hours,
             free_kwh=free_kwh,
             target_kwh=target_kwh,
             enabled=enabled,

@@ -174,6 +174,7 @@ def fill(book):
             plug_power_w=round(SETTINGS["device_power_kw"] * 1000 + random.random() * 120)
                          if relay else 0,
             delivered_kwh=round(delivered, 2),
+            delivered_hours=round(delivered / SETTINGS["device_power_kw"], 2),
             free_kwh=free, target_kwh=target,
             enabled=enabled, wanted=wanted, socket_on=relay, reason=reason,
         )
