@@ -162,8 +162,10 @@ heating, so keep it on the LAN and do not forward the port.
 `DASHBOARD_HOST=127.0.0.1` restricts it to the Pi itself (reachable then over
 an SSH tunnel), and `DASHBOARD_PORT=0` switches it off entirely. The optional
 `ngrok` profile in `docker-compose.yml` does the opposite - it puts this page,
-switch and all, on a public address - so only run it behind ngrok's own access
-control, and never with a reserved domain you have shared.
+switch and all, on a public address (`NGROK_DOMAIN`). It runs behind ngrok's
+Google sign-in, and only the accounts in `NGROK_OAUTH_EMAIL` get past it; with
+that unset nobody does. Set `NGROK_AUTHTOKEN`, `NGROK_DOMAIN` and
+`NGROK_OAUTH_EMAIL` in `.env`, then `docker compose --profile ngrok up -d`.
 
 ### Where the history lives
 

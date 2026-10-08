@@ -35,17 +35,32 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Optional, and off unless asked for: docker compose --profile ngrok up -d
+  #
+  # This puts the dashboard - pause switch included - on a public address, so it
+  # only ever runs behind Google sign-in limited to the addresses in
+  # NGROK_OAUTH_EMAIL. ngrok checks the login at its edge; nothing reaches the
+  # Pi until it has passed. An unset allow-list falls back to an address no one
+  # owns, so a missing line in .env locks everybody out rather than letting
+  # every Google account in. (Not `:?` - compose checks that on every service,
+  # and it would stop the watcher starting on a Pi that never uses ngrok.)
   ngrok:
     image: ngrok/ngrok:latest
     container_name: tapo-ngrok
+    #profiles: ["ngrok"]
 
-    # Expose the dashboard through ngrok. Credentials come from .env.
+    # Same host network as the watcher, so the dashboard is just localhost and
+    # works even with DASHBOARD_HOST=127.0.0.1 keeping it off the LAN.
+    network_mode: host
+
     environment:
-      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:-}
 
     command:
       - "http"
-      - "--basic-auth=${NGROK_BASIC_AUTH}"
-      - "${INTERNAL_IP}:8080"
+      - "127.0.0.1:${DASHBOARD_PORT:-8080}"
+      - "--url=https://${NGROK_DOMAIN:-inverter.ngrok.app}"
+      - "--oauth=google"
+      - "--oauth-allow-email=${NGROK_OAUTH_EMAIL:-nobody@invalid}"
 
     restart: unless-stopped

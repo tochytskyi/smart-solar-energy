@@ -118,8 +118,9 @@ class TheConfig(unittest.TestCase):
                      "dashboard.py", "history.py", "check.py"):
             found |= set(re.findall(r'config\(\s*"([A-Z0-9_]+)"', (ROOT / name).read_text()))
         # .env is read by docker compose as well as by this program, so a key
-        # only the compose file substitutes is documented, not stale.
-        found |= set(re.findall(r"\$\{([A-Z][A-Z0-9_]+)\}",
+        # only the compose file substitutes is documented, not stale - with or
+        # without a `:-default`.
+        found |= set(re.findall(r"\$\{([A-Z][A-Z0-9_]+)(?::-[^}]*)?\}",
                                 (ROOT / "docker-compose.yml").read_text()))
         return found
 

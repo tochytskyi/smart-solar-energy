@@ -34,15 +34,18 @@
 3. Додайте до `.env`:
    ```env
    NGROK_AUTHTOKEN=ваш-токен
-   INTERNAL_IP=192.168.1.100
-   NGROK_BASIC_AUTH=користувач:пароль
+   NGROK_DOMAIN=inverter.ngrok.app
+   NGROK_OAUTH_EMAIL=v.tochytskyi@gmail.com
    ```
+   Кілька адрес — через кому. Якщо `NGROK_OAUTH_EMAIL` не задано, не пустить
+   нікого.
 4. Запустіть з профілем `ngrok`:
    ```bash
    docker compose --profile ngrok up -d
    ```
 
-Панель буде доступна за публічною URL-адресою ngrok з базовою аутентифікацією.
+Панель буде доступна на `https://inverter.ngrok.app` після входу через Google —
+лише для акаунтів зі списку `NGROK_OAUTH_EMAIL`.
 
 **Усе рішення тримається на двох числах:** показнику лічильника самої розетки
 та **добовому підсумку** прогнозу Open-Meteo для цього даху. Погодинна крива
