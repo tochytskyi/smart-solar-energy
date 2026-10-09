@@ -165,11 +165,11 @@ def fill(book):
         grid_up = grid_is_up(local)
         if grid_up != was_up:
             if grid_up:
-                book.event("grid back - 192.168.0.50 is answering again", "info", "system",
+                book.event("sentinel 192.168.0.50:80 is online again - grid back", "info", "system",
                            at=moment)
             else:
-                book.event("grid DOWN - 192.168.0.50:80 stopped answering, the night will"
-                           " not buy", "warn", "system", at=moment)
+                book.event("sentinel 192.168.0.50:80 went OFFLINE - grid down, the night"
+                           " will not buy", "warn", "system", at=moment)
             was_up = grid_up
 
         if night:
@@ -241,6 +241,7 @@ def fill(book):
             book.event("turn ON failed (attempt 1): DeviceError", "error", "plug", at=moment + 60)
         moment += STEP
 
+    book.event("sentinel 192.168.0.50:80 is online - grid up", "info", "system")
     book.event("controlling %s only, %.1f kWh/day budget"
                % (SETTINGS["plug_ip"], SETTINGS["device_daily_kwh"]), "info", "system")
 

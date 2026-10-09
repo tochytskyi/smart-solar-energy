@@ -611,19 +611,27 @@ async def main():
             drawing = await plug.power_w()
             outlook, wet = await look_ahead(forecast, now)
 
-        # Whether the grid is there, by the sentinel. Asked whenever the plug
-        # is, not only at night, so the record shows the outages themselves
-        # and not just the nights they cost; only the night decides on it.
+        # Whether the grid is there, by the sentinel. Asked on every pass while
+        # blackout mode is on - not only when the plug is read - so the page
+        # always knows, and the record shows the outages themselves and not
+        # just the nights they cost. Only the night decides on it.
         grid_up = None
-        if BLACKOUT_MODE and (night or solar or MONITOR_DAYTIME):
+        if BLACKOUT_MODE:
             grid_up = await grid_present()
             if grid_up != last_grid:
-                if not grid_up:
-                    log("grid DOWN - %s:%d stopped answering, the night will not buy"
-                        % (BLACKOUT_SENTINEL_IP, BLACKOUT_SENTINEL_PORT), "warn", "system")
-                elif last_grid is not None:
-                    log("grid back - %s is answering again" % BLACKOUT_SENTINEL_IP,
+                where = "%s:%d" % (BLACKOUT_SENTINEL_IP, BLACKOUT_SENTINEL_PORT)
+                if last_grid is None:
+                    # The first answer after a start, said either way: silence
+                    # here would be indistinguishable from a sentinel never asked.
+                    log("sentinel %s is %s" % (where, "online - grid up" if grid_up
+                        else "OFFLINE - grid down, the night will not buy"),
+                        "info" if grid_up else "warn", "system")
+                elif grid_up:
+                    log("sentinel %s is online again - grid back" % where,
                         category="system")
+                else:
+                    log("sentinel %s went OFFLINE - grid down, the night will not buy"
+                        % where, "warn", "system")
                 last_grid = grid_up
 
         # How long the relay has already been closed today, read back off the

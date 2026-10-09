@@ -305,14 +305,15 @@ night buys  = (the sum above says buy)  and  BLACKOUT_SENTINEL_IP answers
 - **The budget does not move.** A night cut short by an outage just leaves
   more for the day to top up, through the same meter.
 
-The sentinel is asked on every pass that reads the plug, not only at night, so
-the record shows the outages themselves. On the page: a `blackout mode` badge
-in the header, amber while the grid is up and red the moment the sentinel goes
-silent (hover it for the sentinel's address), `grid up` / `grid DOWN` on the
-Socket card, a red rule above the plug
+The sentinel is asked on every pass while blackout mode is on, whatever
+`MONITOR_DAYTIME` says, so the page always knows and the record shows the
+outages themselves. On the page: a `blackout · sentinel online` badge in
+the header, turning red with `OFFLINE` the moment the sentinel goes silent
+(hover it for the address and what that means), the same `sentinel ... online` / `OFFLINE` line on the Socket card, a red rule above the plug
 band on the chart for every outage, a `grid` row in the hover, and the hours
-the grid was down in the Nights table. The Log carries a warn line when the
-sentinel goes silent and an info line when it is back, and the verdict reads
+the grid was down in the Nights table. The Log says what the sentinel answered
+on the first pass after every start - `sentinel <ip>:<port> is online - grid
+up`, or a warn line if it is OFFLINE - and then one line per change, and the verdict reads
 "would buy ... - but `<ip>` is not answering, so the grid is down: holding off".
 
 It is an `.env` switch, not a page control: turning it on or off is a
