@@ -50,3 +50,22 @@ def is_online(ip, port=80, timeout=2):
             return True
     except OSError:
         return False
+
+
+def host_answers(ip, port=80, timeout=2):
+    """True if anything at `ip` is powered and on the LAN, by a TCP knock.
+
+    Unlike is_online, a refused connection counts as an answer: the reset came
+    from the host's own network stack, so it is switched on even if nothing
+    listens on that port. Only silence - a timeout, no route, no ARP reply -
+    means it is gone. TCP rather than ICMP because the container runs as an
+    unprivileged user with no ping binary, and the standard library is all
+    there is.
+    """
+    try:
+        with socket.create_connection((ip, port), timeout):
+            return True
+    except ConnectionRefusedError:
+        return True
+    except OSError:
+        return False

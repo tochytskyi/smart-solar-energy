@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS samples (
     ran_hours           REAL,
     free_kwh            REAL,
     target_kwh          REAL,
+    grid_up             INTEGER,
     enabled             INTEGER,
     wanted              INTEGER,
     socket_on           INTEGER,
@@ -84,7 +85,8 @@ CREATE TABLE IF NOT EXISTS control (
 SAMPLE_FIELDS = (
     "phase", "strategy", "pv_forecast_kwh", "peak_kw",
     "cloud_cover", "rain_mm", "wet_fraction", "plug_power_w", "delivered_kwh",
-    "ran_hours", "free_kwh", "target_kwh", "enabled", "wanted", "socket_on", "reason",
+    "ran_hours", "free_kwh", "target_kwh", "grid_up", "enabled", "wanted", "socket_on",
+    "reason",
 )
 
 LEVELS = ("info", "warn", "error")
@@ -378,7 +380,7 @@ class Logbook:
         since = time.time() - count * 86400.0
         rows = self._execute(lambda conn: [
             dict(row) for row in conn.execute(
-                "SELECT ts, phase, target_kwh, socket_on, delivered_kwh, pv_forecast_kwh"
+                "SELECT ts, phase, target_kwh, socket_on, delivered_kwh, pv_forecast_kwh, grid_up"
                 " FROM samples WHERE ts >= ? ORDER BY ts", (since,))
         ], default=[])
 
@@ -387,6 +389,7 @@ class Logbook:
             day = time.strftime("%Y-%m-%d", time.localtime(row["ts"]))
             entry = days.setdefault(day, {
                 "day": day, "on_seconds": 0.0, "grid_seconds": 0.0, "solar_seconds": 0.0,
+                "grid_down_seconds": 0.0,
                 "delivered_kwh": None, "target_kwh": None,
                 "pv_forecast_kwh": None, "samples": 0,
             })
@@ -397,6 +400,10 @@ class Logbook:
                     entry["on_seconds"] += gap
                     key = "grid_seconds" if row["phase"] == "night" else "solar_seconds"
                     entry[key] += gap
+                # Outages as the blackout sentinel saw them. Only a recorded 0
+                # counts: NULL is blackout mode off, or a row from before it.
+                if row["grid_up"] == 0 and 0 < gap <= MAX_ATTRIBUTED_GAP:
+                    entry["grid_down_seconds"] += gap
             if row["delivered_kwh"] is not None:
                 entry["delivered_kwh"] = max(entry["delivered_kwh"] or 0.0, row["delivered_kwh"])
             if row["pv_forecast_kwh"] is not None:

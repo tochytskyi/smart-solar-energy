@@ -24,6 +24,12 @@ the socket closed for the whole window waiting for energy it will never take.
 
 Outside both windows the socket stays off.
 
+BLACKOUT_MODE adds one more condition to the night, and only to the night:
+during scheduled outages the house runs on its battery, and "cheap grid" at
+00:00 would really be the battery being drained into the load. So the night
+buys only while BLACKOUT_SENTINEL_IP - a device on a circuit the battery does
+not back up - answers on the LAN. The day window is left alone.
+
 All of that can be suspended from the page. Paused, the watcher still reads
 the meter, still fetches the sky and still records every pass - it simply
 stops commanding the relay, so the socket keeps whatever state it had, and it
@@ -50,7 +56,7 @@ import dashboard
 import history
 import solar_forecast
 from solar_forecast import in_window, parse_hhmm, window_hours
-from tapo_client import client, config
+from tapo_client import client, config, host_answers
 
 PLUG_IP = config("PLUG_B_IP")               # the only plug this program controls
 CHECK_INTERVAL = int(config("CHECK_INTERVAL", "60", required=False))
@@ -94,6 +100,17 @@ RAIN_HOURS_FRACTION = float(config("RAIN_HOURS_FRACTION", "0.5", required=False)
 # whole day instead of going blank at breakfast. Set to 0 for the old behaviour.
 MONITOR_DAYTIME = config("MONITOR_DAYTIME", "1", required=False).strip().lower() \
     not in ("0", "false", "no", "off")
+
+# Blackout mode: the night buys grid only while the grid is actually there,
+# judged by whether a device that only has power when the grid does is answering
+# on the LAN. Without it, an outage at 00:00 means the inverter feeds the load
+# from the battery, and the "cheap" night empties the battery the house needs.
+BLACKOUT_MODE = config("BLACKOUT_MODE", "0", required=False).strip().lower() \
+    not in ("0", "false", "no", "off")
+BLACKOUT_SENTINEL_IP = config("BLACKOUT_SENTINEL_IP", "", required=False).strip()
+# Any port will do: a refused connection still proves the host is up. A port it
+# actually listens on is safer, because some devices drop rather than refuse.
+BLACKOUT_SENTINEL_PORT = int(config("BLACKOUT_SENTINEL_PORT", "80", required=False))
 
 # Where the history lives, how long it is kept, and how often an unchanged
 # state is re-recorded. Changes are always recorded at once; this interval only
@@ -147,6 +164,9 @@ def settings():
         "device_daily_hours": DEVICE_DAILY_HOURS,
         "device_power_kw": DEVICE_POWER_KW,
         "house_daytime_kwh": HOUSE_DAYTIME_KWH,
+        "blackout_mode": BLACKOUT_MODE,
+        "blackout_sentinel": "%s:%d" % (BLACKOUT_SENTINEL_IP, BLACKOUT_SENTINEL_PORT)
+                             if BLACKOUT_MODE else None,
     }
 
 
@@ -345,8 +365,24 @@ def spent_so_far(delivered, ran_hours):
     return ", ".join(parts)
 
 
-def decide_night(outlook, wet_fraction, delivered, ran_hours=0.0):
-    """(socket on?, why) inside the cheap-grid window."""
+def decide_night(outlook, wet_fraction, delivered, ran_hours=0.0, grid_up=None):
+    """(socket on?, why) inside the cheap-grid window.
+
+    In blackout mode a night that wants to buy also needs the grid to be there.
+    Anything but a positive answer from the sentinel holds off: the cost of
+    being wrong one way is a load topped up at the day tariff, the other way
+    is a battery emptied into hot water before the house needs it.
+    """
+    on, why = night_verdict(outlook, wet_fraction, delivered, ran_hours)
+    if on and BLACKOUT_MODE and grid_up is not True:
+        return False, why.replace(" - buying", " - would buy", 1) + \
+            " - but %s is not answering, so the grid is down: holding off" % \
+            BLACKOUT_SENTINEL_IP
+    return on, why
+
+
+def night_verdict(outlook, wet_fraction, delivered, ran_hours=0.0):
+    """(socket on?, why) inside the cheap-grid window, as if the grid is there."""
     delivered = delivered or 0.0
     spent, why = budget_spent(delivered, ran_hours)
     if spent:
@@ -417,7 +453,7 @@ class Recorder:
 
     def record(self, **fields):
         key = (fields.get("socket_on"), fields.get("wanted"),
-               fields.get("enabled"), fields.get("reason"))
+               fields.get("enabled"), fields.get("grid_up"), fields.get("reason"))
         now = time.monotonic()
         if key == self._key and now - self._written_at < self._interval:
             return
@@ -428,6 +464,23 @@ class Recorder:
         if now - self._pruned_at >= 86400:
             self._pruned_at = now
             self._logbook.prune()
+
+
+async def grid_present():
+    """Whether the blackout sentinel answers, knocked twice before it is called down.
+
+    Twice because one lost packet on Wi-Fi would otherwise open the relay for a
+    whole CHECK_INTERVAL and close it again on the next pass - a contactor on a
+    water heater does not need that, and a real outage does not go away in a
+    second. Run in a thread: a dead host costs the full timeout, every pass.
+    """
+    for attempt in (1, 2):
+        if await asyncio.to_thread(host_answers, BLACKOUT_SENTINEL_IP,
+                                   BLACKOUT_SENTINEL_PORT, 2):
+            return True
+        if attempt == 1:
+            await asyncio.sleep(1)
+    return False
 
 
 async def look_ahead(forecast, now):
@@ -480,6 +533,10 @@ async def main():
 
     if BOOST_STRATEGY not in ("forecast", "rain"):
         raise SystemExit("BOOST_STRATEGY must be 'forecast' or 'rain', not %r" % BOOST_STRATEGY)
+    if BLACKOUT_MODE and not BLACKOUT_SENTINEL_IP:
+        # Refused rather than guessed: with nothing to ask, every night would
+        # read as an outage and the load would never get its cheap grid.
+        raise SystemExit("BLACKOUT_MODE is on but BLACKOUT_SENTINEL_IP is not set.")
 
     forecast = solar_forecast.from_config()
     if forecast is None:
@@ -515,6 +572,9 @@ async def main():
     if BOOST_STRATEGY == "forecast":
         log("house takes %.1f kWh of the day's roof before the load sees any"
             % HOUSE_DAYTIME_KWH)
+    if BLACKOUT_MODE:
+        log("BLACKOUT MODE: the night buys grid only while %s:%d answers"
+            % (BLACKOUT_SENTINEL_IP, BLACKOUT_SENTINEL_PORT), "warn", "decision")
 
     # The night can only ever deliver what the load can swallow in the hours it
     # has. Worth saying once, loudly, rather than leaving it to be discovered
@@ -528,6 +588,7 @@ async def main():
                 DEVICE_DAILY_KWH, SOLAR_START.strftime("%H:%M")), "warn")
 
     last_reason = None
+    last_grid = None
     was_enabled = True
     while not stop.is_set():
         now = datetime.now()
@@ -550,13 +611,28 @@ async def main():
             drawing = await plug.power_w()
             outlook, wet = await look_ahead(forecast, now)
 
+        # Whether the grid is there, by the sentinel. Asked whenever the plug
+        # is, not only at night, so the record shows the outages themselves
+        # and not just the nights they cost; only the night decides on it.
+        grid_up = None
+        if BLACKOUT_MODE and (night or solar or MONITOR_DAYTIME):
+            grid_up = await grid_present()
+            if grid_up != last_grid:
+                if not grid_up:
+                    log("grid DOWN - %s:%d stopped answering, the night will not buy"
+                        % (BLACKOUT_SENTINEL_IP, BLACKOUT_SENTINEL_PORT), "warn", "system")
+                elif last_grid is not None:
+                    log("grid back - %s is answering again" % BLACKOUT_SENTINEL_IP,
+                        category="system")
+                last_grid = grid_up
+
         # How long the relay has already been closed today, read back off the
         # logbook rather than counted in this process, so a restart mid-window
         # does not hand the load a fresh allowance.
         ran_hours = LOGBOOK.on_hours_today()
 
         if night:
-            wanted, reason = decide_night(outlook, wet, delivered, ran_hours)
+            wanted, reason = decide_night(outlook, wet, delivered, ran_hours, grid_up)
         elif solar:
             # The day window needs no forecast at all - only the meter and the clock.
             wanted, reason = decide_solar(delivered, ran_hours)
@@ -605,6 +681,7 @@ async def main():
             ran_hours=ran_hours,
             free_kwh=free_kwh,
             target_kwh=target_kwh,
+            grid_up=grid_up,
             enabled=enabled,
             wanted=wanted,
             socket_on=socket_on,

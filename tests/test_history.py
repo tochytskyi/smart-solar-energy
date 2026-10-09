@@ -284,6 +284,21 @@ class Days(Booked):
         self.assertIsNone(day["target_kwh"])
         self.assertIsNone(day["delivered_kwh"])
 
+    def test_outages_are_integrated_like_socket_time(self):
+        noon = noon_today()
+        for ts, up in ((noon, 1), (noon + 300, 0), (noon + 600, 0), (noon + 900, 1),
+                       (noon + 1200, 0), (noon + 1200 + 1800, 1)):
+            self.book.sample(at=ts, phase="night", socket_on=0, grid_up=up)
+        # 600 s down, then a stretch too long to trust that is not counted.
+        self.assertAlmostEqual(self.book.days()[0]["grid_down_seconds"], 600.0)
+
+    def test_blackout_mode_off_is_no_outage(self):
+        # NULL is "nobody asked", not "the grid was gone".
+        noon = noon_today()
+        self.book.sample(at=noon, phase="night", socket_on=0)
+        self.book.sample(at=noon + 300, phase="night", socket_on=0)
+        self.assertEqual(self.book.days()[0]["grid_down_seconds"], 0.0)
+
 
 class OnHoursToday(Booked):
     """Today's socket time, which is one of the two brakes on the ration.

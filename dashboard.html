@@ -251,6 +251,7 @@ footer a { color: var(--ink-2); }
       <span style="color:var(--ink-3)"><i class="swatch block" style="background:var(--night);border:1px solid var(--line)"></i>cheap grid</span>
       <span style="color:var(--ink-3)"><i class="swatch block" style="background:var(--day);border:1px solid var(--line)"></i>free solar</span>
       <span style="color:var(--warn)"><i class="swatch block" style="background:none;border:1px dashed var(--warn)"></i>paused</span>
+      <span style="color:var(--error)" id="legend-grid" hidden><i class="swatch" style="height:3px"></i>grid down</span>
     </div>
     <div class="chartbox" id="chartbox">
       <svg id="chart" height="330" role="img" aria-label="forecast roof, socket draw and socket history"></svg>
@@ -431,7 +432,9 @@ function renderCards(data) {
     set.night_start ? "grid " + set.night_start + "–" + set.night_end : null,
     set.solar_start ? "solar " + set.solar_start + "–" + set.solar_end : null,
     set.strategy ? set.strategy + " strategy" : null,
+    set.blackout_mode ? "blackout mode" : null,
   ].filter(Boolean).join("  ·  ");
+  $("legend-grid").hidden = !set.blackout_mode;
 
   $("livepill").className = "pill " + (stale ? "stale" : "live");
   $("livetext").textContent = s.ts ? (stale ? "last seen " + ago(age) : "updated " + ago(age)) : "no data yet";
@@ -455,6 +458,10 @@ function renderCards(data) {
     <div class="note tight">${esc(phaseLabel)}${
       s.plug_power_w == null ? "" : " · drawing " + kw(s.plug_power_w)}</div>
     ${paused ? `<div class="note tight" style="color:var(--warn)">paused · left as it is</div>` : ""}
+    ${s.grid_up == null ? "" : s.grid_up
+      ? `<div class="note tight">grid up · ${esc(set.blackout_sentinel || "sentinel")} answers</div>`
+      : `<div class="note tight" style="color:var(--error)">grid DOWN · ${
+          esc(set.blackout_sentinel || "sentinel")} silent · night will not buy</div>`}
     ${target > 0 ? `
       <div class="bar amber"><i style="width:${Math.min(100, 100 * (delivered || 0) / target)}%"></i></div>
       <div class="note">${delivered == null ? "meter unavailable"
@@ -634,6 +641,12 @@ function renderChart() {
       height="${bandH + 2}" rx="4" fill="none" stroke="var(--warn)" stroke-width="1"
       stroke-dasharray="3 3"></rect>`);
   }
+  /* Blackout mode's outages, as a red rule just above the band: the grid was
+     not there, so a night under it bought nothing whatever the sum said. */
+  for (const [from, to] of runsGridDown(rows, now)) {
+    parts.push(`<rect x="${x(from)}" y="${bandY - 5}" width="${Math.max(1.5, x(to) - x(from))}"
+      height="3" rx="1.5" fill="var(--error)"></rect>`);
+  }
   parts.push(`<text x="${M.left - 7}" y="${bandY + 11}" text-anchor="end" font-size="10"
     fill="var(--ink-3)">plug</text>`);
 
@@ -722,6 +735,20 @@ function runsPaused(rows, until) {
   return runs;
 }
 
+function runsGridDown(rows, until) {
+  /* Contiguous stretches the blackout sentinel was silent for. Only a recorded
+     0 is an outage: NULL is blackout mode off, or a row from before it. */
+  const runs = [];
+  let from = null;
+  for (const r of rows) {
+    const down = r.grid_up === 0 || r.grid_up === false;
+    if (down && from == null) from = r.ts;
+    else if (!down && from != null) { runs.push([from, r.ts]); from = null; }
+  }
+  if (from != null) runs.push([from, until]);
+  return runs;
+}
+
 function niceMax(v) {
   const steps = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30, 40, 50];
   return steps.find((s) => s >= v) || Math.ceil(v / 10) * 10;
@@ -798,6 +825,8 @@ function hover(event) {
     ${best.target_kwh != null ? `<div class="row"><span>grid share</span><span>${n1(best.target_kwh, " kWh")}</span></div>` : ""}
     ${best.delivered_kwh != null ? `<div class="row"><span>delivered</span><span>${n1(best.delivered_kwh, " kWh")}</span></div>` : ""}
     <div class="row"><span>window</span><span>${esc({ night: "cheap grid", solar: "free solar" }[best.phase] || "—")}</span></div>
+    ${best.grid_up != null ? `<div class="row"><span>grid</span>${best.grid_up
+      ? "<span>up</span>" : `<span style="color:var(--error)">DOWN</span>`}</div>` : ""}
     ${best.enabled === 0 ? `<div class="row"><span>watcher</span>
       <span style="color:var(--warn)">paused</span></div>` : ""}
     ${best.reason ? `<div class="reason">${esc(best.reason)}</div>` : ""}`;
@@ -940,11 +969,14 @@ function renderDays(days) {
       <td class="num">${d.delivered_kwh == null ? "—" : n1(d.delivered_kwh, " kWh")}</td>
       <td class="num">${d.target_kwh == null ? "—" : n1(d.target_kwh, " kWh")}</td>
       <td class="num">${d.pv_forecast_kwh == null ? "—" : n1(d.pv_forecast_kwh, " kWh")}</td>
+      <td class="num" style="${d.grid_down_seconds ? "color:var(--error)" : ""}">${
+        d.grid_down_seconds ? duration(d.grid_down_seconds) : "—"}</td>
     </tr>`).join("");
-  $("days").innerHTML = `<table style="min-width:520px">
+  $("days").innerHTML = `<table style="min-width:600px">
     <thead><tr><th>day</th><th>socket on <span style="color:var(--on)">grid</span> /
       <span style="color:var(--solar)">solar</span></th><th class="num">delivered</th>
-      <th class="num">grid share</th><th class="num">forecast</th></tr></thead>
+      <th class="num">grid share</th><th class="num">forecast</th>
+      <th class="num">grid down</th></tr></thead>
     <tbody>${rows}</tbody></table>`;
 }
 

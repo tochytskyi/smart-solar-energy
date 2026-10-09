@@ -3,8 +3,8 @@
 Waiting for a night to pass to see whether a chart change worked is no way to
 build a page, so this fills a throwaway logbook with three days of plausible
 behaviour - a bright day and a dull one, boosts on both tariffs, a lost
-forecast, a failed switch, a stretch with the watcher paused from the page -
-and serves it exactly as main.py would.
+forecast, a failed switch, a stretch with the watcher paused from the page,
+scheduled outages under blackout mode - and serves it exactly as main.py would.
 
     python demo.py                  # http://127.0.0.1:8080, Ctrl-C to stop
     python demo.py 9000             # another port
@@ -31,6 +31,7 @@ SETTINGS = {
     "solar_start": "10:00", "solar_end": "18:00",
     "device_daily_kwh": 6, "device_daily_hours": 3, "device_power_kw": 2.0,
     "house_daytime_kwh": 8,
+    "blackout_mode": True, "blackout_sentinel": "192.168.0.50:80",
 }
 STEP = 300          # the default HISTORY_SAMPLE_INTERVAL
 DAYS = 3
@@ -116,12 +117,26 @@ def plan(outlook):
 PAUSED_FROM, PAUSED_TO = 9, 3
 
 
+def grid_is_up(local):
+    """A scheduled outage every night, and one afternoon that ran over.
+
+    The night one sits inside the cheap window so the page shows blackout mode
+    doing its job: the sum says buy, the sentinel is silent, the socket stays
+    off. The afternoon one shows the day window riding straight through it.
+    """
+    hour = local.hour + local.minute / 60.0
+    if 1.5 <= hour < 4.0:
+        return False
+    return not ((date.today() - local.date()).days == 1 and 14.0 <= hour < 16.0)
+
+
 def fill(book):
     """Three days of five-minute samples, plus the log lines that go with them."""
     delivered, ran_hours, day_seen = 0.0, 0.0, None
     outlook = ahead = None
     relay = False               # what the socket is actually doing
     was_enabled = True
+    was_up = True
     moment = time.time() - DAYS * 86400
     paused_from = time.time() - PAUSED_FROM * 3600
     paused_to = time.time() - PAUSED_TO * 3600
@@ -147,12 +162,26 @@ def fill(book):
         # Only for the hourly log line below - no decision reads this.
         row = judged["hours"][int(hour) - SOLAR_FROM] if solar else None
 
+        grid_up = grid_is_up(local)
+        if grid_up != was_up:
+            if grid_up:
+                book.event("grid back - 192.168.0.50 is answering again", "info", "system",
+                           at=moment)
+            else:
+                book.event("grid DOWN - 192.168.0.50:80 stopped answering, the night will"
+                           " not buy", "warn", "system", at=moment)
+            was_up = grid_up
+
         if night:
             wanted = delivered < target
             reason = ("%.1f kWh sun, house takes %.1f - %.1f kWh reaches the load free"
                       % (judged["pv_kwh"], SETTINGS["house_daytime_kwh"], free))
             reason += (" - buying %.1f kWh of it from the grid" % target if target
                        else " - covers %.1f kWh, waiting for sun" % SETTINGS["device_daily_kwh"])
+            if wanted and not grid_up:
+                wanted = False
+                reason = reason.replace(" - buying", " - would buy") + \
+                    " - but 192.168.0.50 is not answering, so the grid is down: holding off"
         elif solar:
             wanted = delivered < SETTINGS["device_daily_kwh"]
             reason = ("%.1f of %.1f kWh, %.1f of %.1f h so far - topping up from roof and grid"
@@ -198,7 +227,7 @@ def fill(book):
                          if relay else 0,
             delivered_kwh=round(delivered, 2),
             ran_hours=round(ran_hours, 3),
-            free_kwh=free, target_kwh=target,
+            free_kwh=free, target_kwh=target, grid_up=grid_up,
             enabled=enabled, wanted=wanted, socket_on=relay, reason=reason,
         )
 

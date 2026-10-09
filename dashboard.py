@@ -39,7 +39,7 @@ PAGE = Path(__file__).with_name("dashboard.html")
 CSV_COLUMNS = (
     "ts", "phase", "pv_forecast_kwh", "peak_kw", "cloud_cover",
     "rain_mm", "plug_power_w", "delivered_kwh", "ran_hours", "free_kwh", "target_kwh",
-    "enabled", "wanted", "socket_on", "reason",
+    "grid_up", "enabled", "wanted", "socket_on", "reason",
 )
 
 # The most a control request may carry. It is one boolean in a small object;

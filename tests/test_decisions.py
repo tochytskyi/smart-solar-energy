@@ -179,6 +179,87 @@ class NightDecisionRainStrategy(unittest.TestCase):
         self.assertIn("already had", why)
 
 
+class BlackoutMode(unittest.TestCase):
+    """BLACKOUT_MODE: the night buys only while the sentinel answers.
+
+    A 2 kWh roof leaves the load nothing, so the night wants the whole 6 kWh -
+    a verdict that would be ON without the gate in every test below.
+    """
+
+    def decide(self, grid_up, **values):
+        values.setdefault("BLACKOUT_MODE", True)
+        with constants(BLACKOUT_SENTINEL_IP="10.0.0.9", **values):
+            return main.decide_night(outlook(2.0), 0.0, 0.0, 0.0, grid_up)
+
+    def test_a_present_grid_buys_as_usual(self):
+        on, why = self.decide(True)
+        self.assertTrue(on)
+        self.assertIn("buying 6.0 kWh", why)
+
+    def test_a_silent_sentinel_holds_off(self):
+        on, why = self.decide(False)
+        self.assertFalse(on)
+        self.assertIn("would buy 6.0 kWh", why)
+        self.assertIn("10.0.0.9 is not answering", why)
+
+    def test_no_answer_at_all_is_not_an_answer(self):
+        # Fails towards the battery being kept, not towards a buy.
+        on, _ = self.decide(None)
+        self.assertFalse(on)
+
+    def test_off_it_never_asks(self):
+        on, why = self.decide(False, BLACKOUT_MODE=False)
+        self.assertTrue(on)
+        self.assertNotIn("not answering", why)
+
+    def test_a_night_with_nothing_to_buy_says_nothing_about_the_grid(self):
+        # The gate only ever turns an ON into an off; an off verdict keeps its
+        # own reason, so the log does not blame an outage for a sunny forecast.
+        with constants(BLACKOUT_MODE=True, BLACKOUT_SENTINEL_IP="10.0.0.9"):
+            on, why = main.decide_night(outlook(20.0), 0.0, 0.0, 0.0, False)
+        self.assertFalse(on)
+        self.assertNotIn("not answering", why)
+
+    def test_the_rain_strategy_is_gated_too(self):
+        with constants(BOOST_STRATEGY="rain", BLACKOUT_MODE=True,
+                       BLACKOUT_SENTINEL_IP="10.0.0.9"):
+            on, why = main.decide_night(outlook(1.0), 1.0, 0.0, 0.0, False)
+        self.assertFalse(on)
+        self.assertIn("would buy grid", why)
+
+    def test_the_day_window_is_left_alone(self):
+        with constants(BLACKOUT_MODE=True, BLACKOUT_SENTINEL_IP="10.0.0.9"):
+            on, _ = main.decide_solar(0.0, 0.0)
+        self.assertTrue(on)
+
+
+class Sentinel(unittest.TestCase):
+    """host_answers: up is any reply from the host, down is silence."""
+
+    def test_a_listening_port_is_up(self):
+        import socket
+        from tapo_client import host_answers
+        with socket.socket() as server:
+            server.bind(("127.0.0.1", 0))
+            server.listen(1)
+            self.assertTrue(host_answers("127.0.0.1", server.getsockname()[1], 1))
+
+    def test_a_refused_port_is_still_up(self):
+        import socket
+        from tapo_client import host_answers
+        # A port freed again, not one held bound: macOS swallows a connection
+        # to a bound socket that never listens instead of refusing it.
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        self.assertTrue(host_answers("127.0.0.1", port, 1))
+
+    def test_silence_is_down(self):
+        from tapo_client import host_answers
+        with mock.patch("socket.create_connection", side_effect=TimeoutError):
+            self.assertFalse(host_answers("10.0.0.9", 80, 1))
+
+
 class SolarDecision(unittest.TestCase):
     """decide_solar: top up until the meter says the day is done.
 

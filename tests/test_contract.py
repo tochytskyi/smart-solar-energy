@@ -307,7 +307,8 @@ class TheDeployedDocument(unittest.TestCase):
         docker = (ROOT / "DOCKER.md").read_text()
         for key in ("NIGHT_START", "NIGHT_END", "SOLAR_START", "SOLAR_END",
                     "DEVICE_DAILY_KWH", "DEVICE_DAILY_HOURS", "DEVICE_POWER_KW",
-                    "HOUSE_DAYTIME_KWH", "BOOST_STRATEGY"):
+                    "HOUSE_DAYTIME_KWH", "BOOST_STRATEGY",
+                    "BLACKOUT_MODE", "BLACKOUT_SENTINEL_IP", "BLACKOUT_SENTINEL_PORT"):
             self.assertIn(key, docker)
 
 

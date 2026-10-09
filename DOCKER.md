@@ -205,7 +205,7 @@ day**: `DEVICE_DAILY_KWH` off the meter, or `DEVICE_DAILY_HOURS` on the clock.
 
 | Window | Source | Runs when |
 |---|---|---|
-| `NIGHT_START`-`NIGHT_END` (00:00-07:00) | cheap grid | today's sun will not cover the load |
+| `NIGHT_START`-`NIGHT_END` (00:00-07:00) | cheap grid | today's sun will not cover the load - and, with `BLACKOUT_MODE=1`, the grid is actually there |
 | `SOLAR_START`-`SOLAR_END` (10:00-18:00) | roof first, grid for the rest | the budget is not full yet |
 | anything else | - | never |
 | any of them, paused from the page | - | never - the relay is not touched at all |
@@ -274,6 +274,47 @@ hours. They are checked before the meter is missed, so a socket that has had
 its allowance stays off even when the plug has gone unreadable. An unreadable
 **logbook** reads as zero hours, which leaves the meter governing on its own -
 a broken card must not be the thing that stops the load heating.
+
+### Blackout mode: buy only while the grid is there
+
+During scheduled outages the house runs on its battery. The night window would
+not know that - it would see a shortfall, close the socket, and the inverter
+would empty the battery into hot water at 01:00, exactly when the house needs
+it to last until the power comes back.
+
+`BLACKOUT_MODE=1` adds one condition to the night: the socket comes on only
+while `BLACKOUT_SENTINEL_IP` answers on the LAN. Pick a device that is on
+**only when the grid is** - plugged into a socket the inverter does not back
+up - and give it a fixed IP in the router.
+
+```
+night buys  = (the sum above says buy)  and  BLACKOUT_SENTINEL_IP answers
+```
+
+- **How it asks.** A TCP connection to `BLACKOUT_SENTINEL_PORT` (default 80),
+  2 s timeout, tried twice a second apart before the grid is called down - one
+  lost Wi-Fi packet must not open the relay for a whole `CHECK_INTERVAL`. A
+  *refused* connection counts as up: the reset came from the device itself.
+  Some devices drop rather than refuse, so a port it really listens on is the
+  safe choice. `python check.py` prints what the sentinel says right now.
+- **Silence means down.** Anything but an answer holds the night off. Wrong
+  that way, the load tops up at the day tariff; wrong the other way, the
+  battery is gone.
+- **Only the night.** The `SOLAR_START`-`SOLAR_END` top-up is unchanged - it
+  runs on the roof first, and the budget and clock brakes still bound it.
+- **The budget does not move.** A night cut short by an outage just leaves
+  more for the day to top up, through the same meter.
+
+The sentinel is asked on every pass that reads the plug, not only at night, so
+the record shows the outages themselves. On the page: `blackout mode` in the
+subtitle, `grid up` / `grid DOWN` on the Socket card, a red rule above the plug
+band on the chart for every outage, a `grid` row in the hover, and the hours
+the grid was down in the Nights table. The Log carries a warn line when the
+sentinel goes silent and an info line when it is back, and the verdict reads
+"would buy ... - but `<ip>` is not answering, so the grid is down: holding off".
+
+It is an `.env` switch, not a page control: turning it on or off is a
+container restart.
 
 ### Why the day total and not the hourly curve
 

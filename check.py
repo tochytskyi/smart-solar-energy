@@ -15,7 +15,7 @@ from pathlib import Path
 import history
 import main as watcher
 import solar_forecast
-from tapo_client import client, config, is_online
+from tapo_client import client, config, host_answers, is_online
 
 
 def is_paused():
@@ -168,6 +168,14 @@ def check_decision(forecast_result, delivered=None):
         print("               below is still worked out, but the socket is left")
         print("               exactly as it is until the page resumes it.")
 
+    grid_up = None
+    if watcher.BLACKOUT_MODE:
+        grid_up = host_answers(watcher.BLACKOUT_SENTINEL_IP, watcher.BLACKOUT_SENTINEL_PORT)
+        print("  blackout   : on - %s:%d %s" % (
+            watcher.BLACKOUT_SENTINEL_IP, watcher.BLACKOUT_SENTINEL_PORT,
+            "answers, the grid is up" if grid_up
+            else "is SILENT, the grid reads as down and the night will not buy"))
+
     outlook, wet = forecast_result if forecast_result else (None, 0.0)
     print("  delivered  : %s" % (
         "meter unreadable" if delivered is None
@@ -184,11 +192,11 @@ def check_decision(forecast_result, delivered=None):
                   watcher.SOLAR_START.strftime("%H:%M")))
 
     if night:
-        wanted, reason = watcher.decide_night(outlook, wet, delivered)
+        wanted, reason = watcher.decide_night(outlook, wet, delivered, grid_up=grid_up)
     elif solar:
         wanted, reason = watcher.decide_solar(delivered)
     else:
-        wanted, reason = watcher.decide_night(outlook, wet, delivered)
+        wanted, reason = watcher.decide_night(outlook, wet, delivered, grid_up=grid_up)
     verdict = "SOCKET ON" if wanted else "socket off"
     if night or solar:
         print("  verdict    : %s - %s" % (verdict, reason))
