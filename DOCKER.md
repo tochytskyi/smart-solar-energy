@@ -306,8 +306,10 @@ night buys  = (the sum above says buy)  and  BLACKOUT_SENTINEL_IP answers
   more for the day to top up, through the same meter.
 
 The sentinel is asked on every pass that reads the plug, not only at night, so
-the record shows the outages themselves. On the page: `blackout mode` in the
-subtitle, `grid up` / `grid DOWN` on the Socket card, a red rule above the plug
+the record shows the outages themselves. On the page: a `blackout mode` badge
+in the header, amber while the grid is up and red the moment the sentinel goes
+silent (hover it for the sentinel's address), `grid up` / `grid DOWN` on the
+Socket card, a red rule above the plug
 band on the chart for every outage, a `grid` row in the hover, and the hours
 the grid was down in the Nights table. The Log carries a warn line when the
 sentinel goes silent and an info line when it is back, and the verdict reads

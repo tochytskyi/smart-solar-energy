@@ -93,6 +93,12 @@ header .spacer { flex: 1 1 auto; }
 .pill.live .dot { background: var(--solar); animation: pulse 2.4s infinite; }
 .pill.stale { color: var(--warn); border-color: var(--warn); }
 .pill.stale .dot { background: var(--warn); animation: none; }
+/* Blackout mode is an .env setting, not a switch: a badge, not a button. Amber
+   while the grid is there, red the moment the sentinel goes silent. */
+.pill.blackout { color: var(--warn); border-color: var(--warn); font-weight: 560; }
+.pill.blackout .dot { background: var(--warn); }
+.pill.blackout.down { color: var(--error); border-color: var(--error); }
+.pill.blackout.down .dot { background: var(--error); animation: pulse 1.2s infinite; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); flex: none; }
 @keyframes pulse { 0%, 100% { opacity: 1 } 50% { opacity: .35 } }
 button, select, input {
@@ -229,6 +235,7 @@ footer a { color: var(--ink-2); }
       <button data-enabled="1">switching</button>
       <button data-enabled="0">paused</button>
     </div>
+    <span class="pill blackout" id="blackout" hidden><i class="dot"></i><span id="blackouttext"></span></span>
     <span class="pill live" id="livepill"><i class="dot"></i><span id="livetext">connecting</span></span>
     <button id="theme" title="Light / dark">◐</button>
   </header>
@@ -432,9 +439,20 @@ function renderCards(data) {
     set.night_start ? "grid " + set.night_start + "–" + set.night_end : null,
     set.solar_start ? "solar " + set.solar_start + "–" + set.solar_end : null,
     set.strategy ? set.strategy + " strategy" : null,
-    set.blackout_mode ? "blackout mode" : null,
   ].filter(Boolean).join("  ·  ");
   $("legend-grid").hidden = !set.blackout_mode;
+
+  /* The latest pass's own reading, so the badge and the Socket card agree. */
+  const badge = $("blackout");
+  badge.hidden = !set.blackout_mode;
+  if (set.blackout_mode) {
+    const down = s.grid_up === 0 || s.grid_up === false;
+    badge.classList.toggle("down", down);
+    $("blackouttext").textContent = "blackout mode · " + (s.grid_up == null ? "grid unknown"
+      : down ? "grid DOWN, night will not buy" : "grid up");
+    badge.title = "Night grid buys only while " + (set.blackout_sentinel || "the sentinel")
+      + " answers. Set by BLACKOUT_MODE in .env.";
+  }
 
   $("livepill").className = "pill " + (stale ? "stale" : "live");
   $("livetext").textContent = s.ts ? (stale ? "last seen " + ago(age) : "updated " + ago(age)) : "no data yet";
