@@ -276,7 +276,7 @@ class Plug:
                         "warn", "plug")
                     log("  that this host is on the same LAN as the plug.", "warn", "plug")
                 else:
-                    log("  %s" % msg[:160], "warn", "plug")
+                    log("  %s" % msg[:400], "warn", "plug")
                 # Force a fresh handshake, and re-send next time: after a failure
                 # we no longer know what the relay is actually doing.
                 self._device = None
@@ -306,8 +306,11 @@ class Plug:
                     # Once per outage, not once a minute: this runs every pass.
                     if call not in self._read_failed:
                         self._read_failed.add(call)
-                        log("cannot read the %s: %s" % (what, type(exc).__name__),
-                            "warn", "plug")
+                        # The tapo library raises bare Exception for everything,
+                        # so the class name alone says nothing - the message
+                        # (Tapo(SessionTimeout), an HTTP timeout...) is the cause.
+                        log("cannot read the %s: %s: %s" % (
+                            what, type(exc).__name__, str(exc)[:400]), "warn", "plug")
                     return None
                 await asyncio.sleep(1)
                 continue

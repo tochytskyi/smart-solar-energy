@@ -100,7 +100,7 @@ def plan(outlook):
     """(free kWh, grid kWh, wet fraction) - main.py's arithmetic, on this curve.
 
     The day's total less the house, exactly as `free_solar_kwh` does it, so
-    the page's hourly panel and its Verdict card agree here for the same
+    the page's hourly panel and its day-ahead card agree here for the same
     reason they agree on the Pi.
     """
     free = min(SETTINGS["device_daily_kwh"],
