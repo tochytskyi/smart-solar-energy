@@ -15,11 +15,11 @@ from pathlib import Path
 import history
 import main as watcher
 import solar_forecast
-from tapo_client import client, config, host_answers, is_online
+from tapo_client import client, config, is_online
 
 
-def is_paused():
-    """Whether the watcher has been paused from its page, or None if unknown.
+def switch(name):
+    """One of the page's switches as the watcher would read it, or None if unknown.
 
     Read out of the logbook the watcher keeps, and only when there already is
     one: this is a report, and running it on a machine that has never started
@@ -30,9 +30,15 @@ def is_paused():
         return None
     book = history.Logbook(path, watcher.HISTORY_RETENTION_DAYS)
     try:
-        return not book.control(history.CONTROL_ENABLED, True)
+        return book.control(name, True)
     finally:
         book.close()
+
+
+def is_paused():
+    """Whether the watcher has been paused from its page, or None if unknown."""
+    enabled = switch(history.CONTROL_ENABLED)
+    return None if enabled is None else not enabled
 
 
 def decode_nickname(value):
@@ -151,7 +157,7 @@ def check_forecast():
     return outlook, wet
 
 
-def check_decision(forecast_result, delivered=None):
+async def check_decision(forecast_result, delivered=None):
     """Print what the watcher would do with these numbers right now."""
     print("=" * 60)
     print("Decision")
@@ -168,13 +174,31 @@ def check_decision(forecast_result, delivered=None):
         print("               below is still worked out, but the socket is left")
         print("               exactly as it is until the page resumes it.")
 
-    grid_up = None
+    grid_up = grid_said = None
     if watcher.BLACKOUT_MODE:
-        grid_up = host_answers(watcher.BLACKOUT_SENTINEL_IP, watcher.BLACKOUT_SENTINEL_PORT)
-        print("  blackout   : on - %s:%d %s" % (
-            watcher.BLACKOUT_SENTINEL_IP, watcher.BLACKOUT_SENTINEL_PORT,
-            "answers, the grid is up" if grid_up
-            else "is SILENT, the grid reads as down and the night will not buy"))
+        # The watcher's own GridWatch, so this report and the loop cannot
+        # disagree about which answer wins.
+        cloud = watcher.inverter()
+        ask_inverter = switch(history.CONTROL_INVERTER) is not False
+        if cloud is not None and not ask_inverter:
+            print("  inverter   : switched OFF from the dashboard - not asked")
+        seen, grid_said = await watcher.GridWatch(cloud).read(ask_inverter)
+        grid_up = seen["grid_up"]
+        if seen["grid_volts"] is not None:
+            print("  inverter   : weakest phase %.0f V, %.2f Hz, %s, reported %d s ago" % (
+                seen["grid_volts"], seen["grid_hz"], "held for %d min" % (seen["grid_stable_s"] // 60)
+                if seen["grid_stable_s"] is not None else "grid NOT held",
+                seen["grid_age_s"]))
+            print("               %s" % grid_said)
+            if seen["grid_stable_s"] is not None:
+                # One reading cannot show a hold; the running watcher times it
+                # across passes, so its page is where the settle clock is.
+                print("               (a one-off report starts the hold at 0 - the"
+                      " watcher's page shows the real one)")
+        print("  blackout   : on - %s by the %s%s" % (
+            "grid UNKNOWN" if grid_up is None else "grid up" if grid_up else "grid DOWN",
+            seen["grid_source"] or "nothing that answered",
+            "" if grid_up else ", the night will not buy"))
 
     outlook, wet = forecast_result if forecast_result else (None, 0.0)
     print("  delivered  : %s" % (
@@ -192,11 +216,13 @@ def check_decision(forecast_result, delivered=None):
                   watcher.SOLAR_START.strftime("%H:%M")))
 
     if night:
-        wanted, reason = watcher.decide_night(outlook, wet, delivered, grid_up=grid_up)
+        wanted, reason = watcher.decide_night(outlook, wet, delivered, grid_up=grid_up,
+                                              grid_said=grid_said)
     elif solar:
         wanted, reason = watcher.decide_solar(delivered)
     else:
-        wanted, reason = watcher.decide_night(outlook, wet, delivered, grid_up=grid_up)
+        wanted, reason = watcher.decide_night(outlook, wet, delivered, grid_up=grid_up,
+                                              grid_said=grid_said)
     verdict = "SOCKET ON" if wanted else "socket off"
     if night or solar:
         print("  verdict    : %s - %s" % (verdict, reason))
@@ -223,7 +249,7 @@ async def main():
     print()
     forecast_result = await asyncio.to_thread(check_forecast)
     print()
-    check_decision(forecast_result, delivered)
+    await check_decision(forecast_result, delivered)
 
     print()
     print("%d/%d plug(s) reachable." % (sum(reachable), len(reachable)))

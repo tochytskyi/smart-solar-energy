@@ -180,28 +180,67 @@ class TheDemo(unittest.TestCase):
                             "demo.py never produces the %r phase" % phase)
 
 
-class TheInverterIsNotRead(unittest.TestCase):
-    """The decision is the plug's meter and the forecast, and nothing else.
+class TheInverterOnlySaysWhetherTheGridIsThere(unittest.TestCase):
+    """The decision is the plug's meter and the forecast; the inverter is a grid detector.
 
-    Deleting deye_client.py is easy to undo by accident - a reinstated import,
-    a stray SOC term back in the arithmetic. This fails if either comes back.
+    There was a Deye client here that fed the battery and the power flows into
+    the arithmetic, and it was deleted. It came back - deliberately, for one
+    job - as blackout mode's "is the grid there?", read off the Deye Cloud
+    because the logger speaks no local Modbus. These fail if it grows past
+    that: a SOC term in a sum, a power flow in the record, or the page and the
+    logbook learning which inverter this is.
     """
 
-    SOURCES = ("main.py", "check.py", "dashboard.py", "history.py",
-               "solar_forecast.py", "demo.py", "dashboard.html")
+    # Never mention it: they show what the record says, not where it came from.
+    SOURCES = ("dashboard.py", "history.py", "solar_forecast.py", "demo.py", "dashboard.html")
+    CLIENT = (ROOT / "deye_cloud.py").read_text()
 
-    def test_nothing_reaches_for_an_inverter(self):
+    def test_only_the_watcher_and_its_report_reach_for_it(self):
         for name in self.SOURCES:
             self.assertNotIn("deye", (ROOT / name).read_text().lower(),
-                             "%s still reaches for the inverter" % name)
+                             "%s reaches for the inverter" % name)
+
+    def test_the_client_hands_back_the_grid_and_nothing_else(self):
+        import deye_cloud
+        reply = {"deviceDataList": [{"deviceSn": "x", "collectionTime": 0, "dataList": [
+            {"key": key, "value": "1"} for key in
+            ("GridVoltageL1", "GridVoltageL2", "GridVoltageL3", "GridFrequency",
+             "SOC", "BatteryPower", "TotalSolarPower", "LoadPower")]}]}
+        self.assertEqual(set(deye_cloud.parse(reply, "x")),
+                         {"accepted", "volts", "hz", "status", "collected"})
+
+    def test_the_client_only_ever_reads(self):
+        # Four endpoints, every one a query. Nothing that sets, controls or
+        # schedules the inverter may appear in it.
+        paths = set(re.findall(r'"(/v1\.0/[a-z/]+)', self.CLIENT))
+        self.assertEqual(paths, {"/v1.0/account/token", "/v1.0/station/list",
+                                 "/v1.0/station/device", "/v1.0/device/latest"})
+
+    def test_the_watcher_asks_it_one_question(self):
+        asked = {node.attr for node in ast.walk(MAIN) if isinstance(node, ast.Attribute)
+                 and isinstance(node.value, ast.Attribute) and node.value.attr == "_cloud"}
+        self.assertEqual(asked, {"grid"})
+
+    def test_the_night_still_takes_a_yes_or_no(self):
+        # Not a reading: the arithmetic sees grid_up and the words for the log.
+        decide = next(node for node in ast.walk(MAIN)
+                      if isinstance(node, ast.FunctionDef) and node.name == "decide_night")
+        self.assertEqual([arg.arg for arg in decide.args.args],
+                         ["outlook", "wet_fraction", "delivered", "ran_hours",
+                          "grid_up", "grid_said"])
 
     def test_no_battery_charge_is_left_in_the_recorded_numbers(self):
         self.assertNotIn("soc", history.SAMPLE_FIELDS)
         self.assertNotIn("soc", dashboard.CSV_COLUMNS)
+        for name in history.SAMPLE_FIELDS:
+            self.assertNotRegex(name, r"^soc$|batt|pv_power|load_power",
+                                "%s is an inverter number in the record" % name)
 
-    def test_the_inverter_credentials_are_gone_from_the_config(self):
+    def test_its_config_is_the_grid_reading_and_nothing_else(self):
         documented = re.findall(r"^#?\s*([A-Z][A-Z0-9_]+)=", EXAMPLE, re.M)
-        self.assertEqual([key for key in documented if key.startswith("DEYE")], [])
+        self.assertEqual(sorted(key for key in documented if key.startswith("DEYE")),
+                         ["DEYE_API_URL", "DEYE_APP_ID", "DEYE_APP_SECRET", "DEYE_EMAIL",
+                          "DEYE_GRID_SETTLE", "DEYE_MAX_AGE", "DEYE_PASSWORD"])
 
 
 class TheDecisionUsesTheDayTotal(unittest.TestCase):
@@ -235,18 +274,20 @@ class TheDecisionUsesTheDayTotal(unittest.TestCase):
                          " the meter and the clock, and nothing else")
 
     def test_no_surplus_thresholds_are_left_anywhere(self):
-        for name in TheInverterIsNotRead.SOURCES + (".env.example",):
+        for name in TheInverterOnlySaysWhetherTheGridIsThere.SOURCES + (
+                "main.py", "check.py", "deye_cloud.py", ".env.example"):
             self.assertNotIn("SOLAR_SURPLUS", (ROOT / name).read_text(),
                              "%s still carries a per-hour surplus gate" % name)
 
 
-class ThePageChangesExactlyOneThing(unittest.TestCase):
-    """The dashboard reads the logbook and writes one boolean: the pause.
+class ThePageChangesOnlyItsDeclaredSwitches(unittest.TestCase):
+    """The dashboard reads the logbook and writes its switches, and nothing else.
 
     It was purely a reader until the pause switch arrived, and the reason it
     could be left unauthenticated on the LAN was that there was nothing to
-    write. There is one thing now, so what it may touch is checked by machine:
-    one route, one declared switch, and no way to reach the relay.
+    write. Widened once, deliberately, for a second switch - whether blackout
+    mode may ask the inverter - so what it may touch is checked by machine:
+    one route, a fixed list of switches, and no way to reach the relay.
     """
 
     DASHBOARD = ast.parse((ROOT / "dashboard.py").read_text())
@@ -265,15 +306,24 @@ class ThePageChangesExactlyOneThing(unittest.TestCase):
                            if isinstance(other, ast.Constant)}
         self.assertEqual(routes, {"/api/control"})
 
+    def test_the_switches_are_exactly_these(self):
+        # A third one is a decision, not a side effect: it lands here first.
+        self.assertEqual(history.CONTROLS, (history.CONTROL_ENABLED, history.CONTROL_INVERTER))
+        self.assertEqual(history.CONTROLS, ("enabled", "inverter"))
+
     def test_it_writes_nothing_but_a_declared_switch(self):
-        written = set()
-        for call in calls(self.DASHBOARD, "set_control"):
-            name = call.args[0] if call.args else None
-            self.assertIsInstance(name, ast.Attribute,
-                                  "the switch being written is not a declared one")
-            written.add(name.attr)
-        self.assertEqual(written, {"CONTROL_ENABLED"})
-        self.assertIn(history.CONTROL_ENABLED, history.CONTROLS)
+        # The one set_control call writes a name drawn from history.CONTROLS,
+        # and the name is only ever bound by that comprehension.
+        writes = calls(self.DASHBOARD, "set_control")
+        self.assertEqual(len(writes), 1)
+        self.assertIn("for name in history.CONTROLS if name in given", self.SOURCE)
+        self.assertEqual(self.SOURCE.count("name = names[0]"), 1)
+
+    def test_neither_switch_can_reach_the_relay_or_a_threshold(self):
+        # The inverter switch narrows what the night believes; it is not a
+        # way to make the night buy. Off, the loop only skips the cloud.
+        main_source = (ROOT / "main.py").read_text()
+        self.assertIn("grid.read(ask_inverter)", main_source)
 
     def test_the_server_cannot_reach_the_plug(self):
         # The switch says whether the watcher may decide. It is not a relay,
@@ -308,7 +358,8 @@ class TheDeployedDocument(unittest.TestCase):
         for key in ("NIGHT_START", "NIGHT_END", "SOLAR_START", "SOLAR_END",
                     "DEVICE_DAILY_KWH", "DEVICE_DAILY_HOURS", "DEVICE_POWER_KW",
                     "HOUSE_DAYTIME_KWH", "BOOST_STRATEGY",
-                    "BLACKOUT_MODE", "BLACKOUT_SENTINEL_IP", "BLACKOUT_SENTINEL_PORT"):
+                    "BLACKOUT_MODE", "BLACKOUT_SENTINEL_IP", "BLACKOUT_SENTINEL_PORT",
+                    "DEYE_APP_ID", "DEYE_MAX_AGE", "DEYE_GRID_SETTLE"):
             self.assertIn(key, docker)
 
 

@@ -233,6 +233,19 @@ class BlackoutMode(unittest.TestCase):
         self.assertTrue(on)
 
 
+class GridSaid(unittest.TestCase):
+    """decide_night says whose word the outage was taken on."""
+
+    def test_the_inverter_s_phrase_reaches_the_reason(self):
+        with constants(BLACKOUT_MODE=True, BLACKOUT_SENTINEL_IP="10.0.0.9"):
+            on, why = main.decide_night(outlook(2.0), 0.0, 0.0, 0.0, False,
+                                        "the inverter reads 0 V, 0.0 Hz, so the grid is down")
+        self.assertFalse(on)
+        self.assertIn("would buy 6.0 kWh", why)
+        self.assertIn("the inverter reads 0 V", why)
+        self.assertNotIn("10.0.0.9", why)
+
+
 class Sentinel(unittest.TestCase):
     """host_answers: up is any reply from the host, down is silence."""
 
@@ -742,11 +755,15 @@ class SettingsForThePage(unittest.TestCase):
     """settings() draws the thresholds on the page - and nothing else."""
 
     def test_it_carries_no_credentials(self):
-        from tests import SECRET
-        blob = repr(main.settings())
-        self.assertNotIn(SECRET, blob)
+        from tests import SECRETS
+        # With the inverter on, so its keys are in play too.
+        with constants(BLACKOUT_MODE=True, DEYE_APP_ID="app-id-must-never-be-served"):
+            blob = repr(main.settings())
+            keys = list(main.settings())
+        for secret in SECRETS + ("app-id-must-never-be-served",):
+            self.assertNotIn(secret, blob)
         self.assertNotIn("@", blob)
-        for key in main.settings():
+        for key in keys:
             self.assertNotRegex(key, r"password|secret|token|email|credential")
 
     def test_it_survives_json(self):

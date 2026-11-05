@@ -11,17 +11,19 @@ Routes:
     GET  /api/events       ?hours=24&level=&q=&limit=&before=   the log tail
     GET  /api/days         ?days=14                nightly totals
     GET  /api/export.csv   ?hours=168              the same samples as a file
-    POST /api/control      {"enabled": true|false} pause or resume the switching
+    POST /api/control      {"enabled": true|false}  pause or resume the switching
+                           {"inverter": true|false} let blackout mode ask the inverter, or not
 
-Every route but the last is read-only, and the last one writes exactly one
-boolean: whether the watcher may command the relay at all. It cannot switch
-the socket itself, cannot change a threshold, and cannot reach anything else
-in the logbook - history.CONTROLS is the whole list of what may be written.
+Every route but the last is read-only, and the last one writes one boolean
+per request, out of history.CONTROLS and nothing else: whether the watcher may
+command the relay at all, and whether the grid may be judged by the inverter.
+It cannot switch the socket itself, cannot change a threshold, and cannot
+reach anything else in the logbook.
 
 It is all unauthenticated: it exposes the numbers the watcher decides on,
 never the credentials it decides with. Anyone who can reach the page can
-pause the watcher, which is the reason this belongs on the LAN and nowhere
-else. Do not forward the port.
+pause the watcher, or stop it asking the inverter, which is the reason this
+belongs on the LAN and nowhere else. Do not forward the port.
 """
 
 import json
@@ -39,7 +41,9 @@ PAGE = Path(__file__).with_name("dashboard.html")
 CSV_COLUMNS = (
     "ts", "phase", "pv_forecast_kwh", "peak_kw", "cloud_cover",
     "rain_mm", "plug_power_w", "delivered_kwh", "ran_hours", "free_kwh", "target_kwh",
-    "grid_up", "enabled", "wanted", "socket_on", "reason",
+    "grid_up", "grid_source", "grid_volts", "grid_hz", "grid_age_s", "grid_status",
+    "grid_stable_s", "inverter_enabled",
+    "enabled", "wanted", "socket_on", "reason",
 )
 
 # The most a control request may carry. It is one boolean in a small object;
@@ -69,8 +73,8 @@ class Server(ThreadingHTTPServer):
 def serve(host, port, logbook, settings, on_log=None, on_control=None):
     """Start the dashboard in a background thread and return the server.
 
-    `on_control(enabled)` is called on the serving thread when the page throws
-    the pause switch, and only when it actually changed. It is a notification,
+    `on_control(name, on)` is called on the serving thread when the page throws
+    one of history.CONTROLS, and only when it actually changed. It is a notification,
     not the switch itself - the logbook holds that, and the watcher reads it
     there - so a caller that only wants a log line can pass one.
     """
@@ -111,7 +115,7 @@ def _handler_class(logbook, settings, on_control=None):
             self._json({"error": "not found"}, status=404)
 
         def do_POST(self):
-            """The one thing that may be written: the pause switch."""
+            """The only writes there are: the switches in history.CONTROLS."""
             route = urlparse(self.path).path.rstrip("/") or "/"
             try:
                 if route == "/api/control":
@@ -140,6 +144,9 @@ def _handler_class(logbook, settings, on_control=None):
                 # the same answer main.py acts on, so the page cannot show a
                 # pause the loop is not honouring.
                 "enabled": logbook.control(history.CONTROL_ENABLED, True),
+                # The same default for the same reason: an unreadable switch
+                # leaves the inverter asked, as main.py does.
+                "inverter": logbook.control(history.CONTROL_INVERTER, True),
             }
 
         def _samples(self, query):
@@ -156,7 +163,7 @@ def _handler_class(logbook, settings, on_control=None):
             }
 
         def _control(self):
-            """Pause or resume the switching, and answer with what it now is.
+            """Throw one declared switch, and answer with what it now is.
 
             The answer is read back out of the logbook rather than echoed, so
             a page that could not be stored - a full card, a read-only volume -
@@ -171,20 +178,28 @@ def _handler_class(logbook, settings, on_control=None):
             except ValueError:
                 return self._json({"error": "expected JSON"}, status=400)
 
-            value = payload.get("enabled") if isinstance(payload, dict) else None
+            # Exactly one switch per request, and only a declared one: a body
+            # naming two is ambiguous about which the page meant to throw.
+            given = payload if isinstance(payload, dict) else {}
+            names = [name for name in history.CONTROLS if name in given]
+            expected = " or ".join('{"%s": true|false}' % name for name in history.CONTROLS)
+            if len(names) != 1:
+                return self._json({"error": "expected " + expected}, status=400)
+            name = names[0]
+            value = given[name]
             # Only a real boolean (or the 0/1 a shell would send), never a
             # string: bool("false") is True, and a switch that means the
             # opposite of what was typed is worse than one that will not move.
             if value not in (True, False, 0, 1):
-                return self._json({"error": 'expected {"enabled": true|false}'}, status=400)
+                return self._json({"error": "expected " + expected}, status=400)
 
             wanted = bool(value)
-            before = logbook.control(history.CONTROL_ENABLED, True)
-            logbook.set_control(history.CONTROL_ENABLED, wanted)
-            after = logbook.control(history.CONTROL_ENABLED, True)
+            before = logbook.control(name, True)
+            logbook.set_control(name, wanted)
+            after = logbook.control(name, True)
             if on_control is not None and after != before:
-                on_control(after)
-            return self._json({"enabled": after, "stored": after == wanted})
+                on_control(name, after)
+            return self._json({name: after, "stored": after == wanted})
 
         def _drain(self, limit=MAX_BODY):
             """This request's body, or None if it is too big to be one of ours.

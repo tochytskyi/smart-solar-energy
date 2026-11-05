@@ -83,6 +83,11 @@ ENV = {
     # Sentinels, so a test can prove these never reach the page.
     "TAPO_EMAIL": "nobody@example.invalid",
     "TAPO_PASSWORD": "s3cret-must-never-be-served",
+    # The inverter's, with DEYE_APP_ID left unset so no test builds a client
+    # that could reach the real cloud - a test that wants one makes its own.
+    "DEYE_APP_SECRET": "deye-app-secret-must-never-be-served",
+    "DEYE_EMAIL": "inverter@example.invalid",
+    "DEYE_PASSWORD": "deye-password-must-never-be-served",
 
     "LATITUDE": "50.45",
     "LONGITUDE": "30.52",
@@ -90,3 +95,4 @@ ENV = {
 os.environ.update(ENV)
 
 SECRET = ENV["TAPO_PASSWORD"]
+SECRETS = (SECRET, ENV["DEYE_APP_SECRET"], ENV["DEYE_PASSWORD"])

@@ -32,6 +32,7 @@ SETTINGS = {
     "device_daily_kwh": 6, "device_daily_hours": 3, "device_power_kw": 2.0,
     "house_daytime_kwh": 8,
     "blackout_mode": True, "blackout_sentinel": "192.168.0.50:80",
+    "blackout_inverter": True, "inverter_max_age": 300, "inverter_settle": 600,
 }
 STEP = 300          # the default HISTORY_SAMPLE_INTERVAL
 DAYS = 3
@@ -115,6 +116,9 @@ def plan(outlook):
 # Anchored on now rather than on the clock so it is always inside the page's
 # default 24-hour view: the point of it is to be looked at.
 PAUSED_FROM, PAUSED_TO = 9, 3
+# And a stretch with the inverter switched off from the page, so the sentinel
+# alone decides the grid and the page has to say so.
+INVERTER_OFF_FROM, INVERTER_OFF_TO = 14, 12
 
 
 def grid_is_up(local):
@@ -130,6 +134,28 @@ def grid_is_up(local):
     return not ((date.today() - local.date()).days == 1 and 14.0 <= hour < 16.0)
 
 
+def cloud_is_stale(local):
+    """The first half hour of every night outage, the router went down with the grid.
+
+    The logger cannot upload, so the inverter's last reading ages past the
+    limit and the sentinel decides - the page has to show that handover.
+    """
+    hour = local.hour + local.minute / 60.0
+    return 1.5 <= hour < 2.0
+
+
+def weak_grid(local):
+    """Half an hour after the night outage when the mains sags and the inverter flaps.
+
+    The shape this site's own history shows: the weakest phase dips under
+    about 181 V, the inverter reports 0 Hz and refuses the grid, takes it back
+    a few minutes later, refuses it again. The night has to sit it out until
+    the inverter has held the grid for the whole settle time.
+    """
+    hour = local.hour + local.minute / 60.0
+    return 4.0 <= hour < 4.5
+
+
 def fill(book):
     """Three days of five-minute samples, plus the log lines that go with them."""
     delivered, ran_hours, day_seen = 0.0, 0.0, None
@@ -137,9 +163,14 @@ def fill(book):
     relay = False               # what the socket is actually doing
     was_enabled = True
     was_up = True
+    was_stale = False
     moment = time.time() - DAYS * 86400
+    held_since = moment - 3600     # the inverter had the grid before the record starts
     paused_from = time.time() - PAUSED_FROM * 3600
     paused_to = time.time() - PAUSED_TO * 3600
+    inverter_off_from = time.time() - INVERTER_OFF_FROM * 3600
+    inverter_off_to = time.time() - INVERTER_OFF_TO * 3600
+    was_asked = True
 
     while moment < time.time():
         local = datetime.fromtimestamp(moment)
@@ -162,14 +193,56 @@ def fill(book):
         # Only for the hourly log line below - no decision reads this.
         row = judged["hours"][int(hour) - SOLAR_FROM] if solar else None
 
-        grid_up = grid_is_up(local)
+        mains = grid_is_up(local)
+        asked = not (inverter_off_from <= moment < inverter_off_to)
+        if asked != was_asked:
+            book.event("inverter switched back ON from the page - it decides the grid again,"
+                       " after holding it for 10 min" if asked
+                       else "inverter switched OFF from the page - only the sentinel decides"
+                       " the grid", "info" if asked else "warn", "system", at=moment)
+            was_asked = asked
+        # Off from the page, the cloud is not asked at all - which, for the
+        # page, looks like a stale cloud with nothing recorded from it.
+        cloud_stale = cloud_is_stale(local)
+        stale = cloud_stale or not asked
+        sagging = mains and weak_grid(local)
+        refused = sagging and (local.minute // 5) % 2 == 0
+        volts = (0.0 if not mains else round(176 + random.random() * 4, 1) if refused
+                 else round(186 + random.random() * 4, 1) if sagging
+                 else round(205 + random.random() * 20, 1))
+        hz = 0.0 if not mains or refused else round(49.95 + random.random() * 0.1, 2)
+        if hz > 0 and asked:
+            held_since = held_since if held_since is not None else moment
+        else:
+            held_since = None
+        stable = None if held_since is None else moment - held_since
+        age = 360 + (moment % 1800) if stale else 20 + random.random() * 60
+        source = "sentinel" if stale else "inverter"
+        if stale:
+            grid_up = mains
+            said = "sentinel 192.168.0.50:80 %s" % ("answers" if mains else "is not answering")
+        elif not mains:
+            grid_up, said = False, "the inverter reads no grid (0 V)"
+        elif refused:
+            grid_up, said = False, "the inverter rejected the grid (0 Hz, weakest phase %.0f V)" % volts
+        elif stable < SETTINGS["inverter_settle"]:
+            grid_up, said = False, "the inverter has held the grid only %d of %d min" % (
+                stable // 60, SETTINGS["inverter_settle"] // 60)
+        else:
+            grid_up, said = True, "the inverter has the grid, weakest phase %.0f V, %.1f Hz" % (
+                volts, hz)
+        if cloud_stale != was_stale:
+            book.event("inverter grid reading last reported 6 min ago - the sentinel decides"
+                       " until it is back" if cloud_stale
+                       else "inverter grid reading usable again - it decides the grid",
+                       "warn" if cloud_stale else "info", "system", at=moment)
+            was_stale = cloud_stale
         if grid_up != was_up:
             if grid_up:
-                book.event("sentinel 192.168.0.50:80 is online again - grid back", "info", "system",
-                           at=moment)
+                book.event("grid is back - %s" % said, "info", "system", at=moment)
             else:
-                book.event("sentinel 192.168.0.50:80 went OFFLINE - grid down, the night"
-                           " will not buy", "warn", "system", at=moment)
+                book.event("grid went DOWN - %s, the night will not buy" % said,
+                           "warn", "system", at=moment)
             was_up = grid_up
 
         if night:
@@ -181,7 +254,7 @@ def fill(book):
             if wanted and not grid_up:
                 wanted = False
                 reason = reason.replace(" - buying", " - would buy") + \
-                    " - but 192.168.0.50 is not answering, so the grid is down: holding off"
+                    " - but %s, so the grid is down: holding off" % said
         elif solar:
             wanted = delivered < SETTINGS["device_daily_kwh"]
             reason = ("%.1f of %.1f kWh, %.1f of %.1f h so far - topping up from roof and grid"
@@ -228,6 +301,15 @@ def fill(book):
             delivered_kwh=round(delivered, 2),
             ran_hours=round(ran_hours, 3),
             free_kwh=free, target_kwh=target, grid_up=grid_up,
+            grid_source=source,
+            grid_volts=volts if asked else None, grid_hz=hz if asked else None,
+            grid_age_s=round(age) if asked else None,
+            grid_stable_s=None if stable is None else round(stable),
+            inverter_enabled=asked,
+            # The inverter's flow word: "Static" whenever nothing crosses the meter,
+            # outage or not, which is why nothing decides on it.
+            grid_status=None if not asked else "Purchasing energy" if relay and grid_up
+            else "Static",
             enabled=enabled, wanted=wanted, socket_on=relay, reason=reason,
         )
 

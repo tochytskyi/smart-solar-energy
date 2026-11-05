@@ -94,7 +94,9 @@ Pi's own address. It shows:
   the second one costs nothing extra;
 - **the log** - the same lines `docker compose logs` shows, kept for
   `HISTORY_RETENTION_DAYS`, filterable by level and text;
-- **the pause switch** - top right, `switching` / `paused`. See below.
+- **the pause switch** - top right, `switching` / `paused`. See below;
+- **the inverter switch** - next to it, `inverter` / `sentinel only`, when
+  blackout mode has an inverter to ask. See below.
 
 It refreshes itself once a minute - the same cadence as `CHECK_INTERVAL`, so
 the page is never more than one decision behind - and reads well on a phone. A
@@ -150,15 +152,52 @@ curl -s http://<pi-address>:8080/api/state | grep -o '"enabled":[a-z]*'
 `python check.py` reports the pause too, above the verdict it would otherwise
 be acting on.
 
+### Leaving the inverter out from the page
+
+When blackout mode has an inverter to ask (`DEYE_APP_ID` set), a second switch
+sits next to the pause: `inverter` / `sentinel only` (`inverter off` when
+there is no sentinel either).
+
+| | how the night judges the grid |
+|---|---|
+| `inverter` | the normal thing - the inverter's own verdict, read off the Deye Cloud, with the sentinel as the fallback |
+| `sentinel only` | the Deye Cloud is **not called at all**; `BLACKOUT_SENTINEL_IP` alone says whether the grid is there |
+
+It is there for a cloud that is down, slow or answering nonsense, without
+editing `.env` and restarting. Like the pause it lives in the logbook and
+survives a restart, and a watcher that starts with it off says so in the log.
+
+What it gives up: the sentinel only sees a dead grid, not a weak one the
+inverter would refuse, so a sagging evening reads as "grid up". And with no
+sentinel configured, off means nothing can say the grid is there, so the night
+does not buy at all. It can only make the night more cautious or less
+precise - never make it buy when it otherwise would not have.
+
+Switched back on, the inverter is not trusted on the spot: it has to be seen
+holding the grid for the whole `DEYE_GRID_SETTLE` again, since nobody watched
+it while it was off.
+
+On the page the switch shows `sentinel only` in amber while it is off, the
+Socket card says `sentinel ... online (inverter off)`, the hover has an
+`inverter · off from the page` row, and the CSV has `inverter_enabled`. The
+Log gets one line per flip.
+
+```bash
+curl -s -X POST -H "Content-Type: application/json" \
+  -d '{"inverter": false}' http://<pi-address>:8080/api/control
+```
+
 ### Keep it on the LAN
 
 Every other route is **read-only**, and none of them carries a credential. The
-one that is not - `POST /api/control` - writes a single boolean and can reach
-nothing else: it cannot switch the socket, cannot change a threshold, and
-cannot touch the record.
+one that is not - `POST /api/control` - writes one of two booleans per request
+(the pause, or whether the inverter is asked) and can reach nothing else: it
+cannot switch the socket, cannot change a threshold, and cannot touch the
+record.
 
 There is no password on any of it. Anyone who can open the page can pause the
-heating, so keep it on the LAN and do not forward the port.
+heating, or leave the inverter out, so keep it on the LAN and do not forward
+the port.
 `DASHBOARD_HOST=127.0.0.1` restricts it to the Pi itself (reachable then over
 an SSH tunnel), and `DASHBOARD_PORT=0` switches it off entirely. The optional
 `ngrok` profile in `docker-compose.yml` does the opposite - it puts this page,
@@ -211,8 +250,9 @@ day**: `DEVICE_DAILY_KWH` off the meter, or `DEVICE_DAILY_HOURS` on the clock.
 | any of them, paused from the page | - | never - the relay is not touched at all |
 
 **Two numbers decide all of it**: the plug's own meter, and the Open-Meteo
-forecast for this roof. Nothing is read from the inverter - no cloud account,
-no battery charge, no API key anywhere in the loop.
+forecast for this roof. The inverter is read for one thing only - whether the
+grid is there, in blackout mode below - and never for its battery charge or
+its power flows.
 
 ### The arithmetic, in full
 
@@ -283,38 +323,152 @@ would empty the battery into hot water at 01:00, exactly when the house needs
 it to last until the power comes back.
 
 `BLACKOUT_MODE=1` adds one condition to the night: the socket comes on only
-while `BLACKOUT_SENTINEL_IP` answers on the LAN. Pick a device that is on
-**only when the grid is** - plugged into a socket the inverter does not back
-up - and give it a fixed IP in the router.
+while the grid is there. Two things can say so, in this order:
+
+1. **The inverter**, when `DEYE_APP_ID` is set, read off the Deye Cloud
+   OpenAPI. What counts is the inverter's **own** decision to use the grid,
+   not a voltage threshold of ours - see below. This is the better witness:
+   it sees a grid too weak to use, which the sentinel cannot.
+2. **The sentinel**, `BLACKOUT_SENTINEL_IP`. A device that is on **only when
+   the grid is** - plugged into a socket the inverter does not back up - with
+   a fixed IP in the router. It decides whenever the inverter cannot: the
+   cloud failed, or its reading is older than `DEYE_MAX_AGE` seconds (300 by
+   default).
 
 ```
-night buys  = (the sum above says buy)  and  BLACKOUT_SENTINEL_IP answers
+night buys  = (the sum above says buy)  and  the grid is there
+grid        = the inverter has held the grid for DEYE_GRID_SETTLE,
+                if its reading is no older than DEYE_MAX_AGE
+              else BLACKOUT_SENTINEL_IP answers
+              else unknown - which holds off like down
 ```
 
-- **How it asks.** A TCP connection to `BLACKOUT_SENTINEL_PORT` (default 80),
-  2 s timeout, tried twice a second apart before the grid is called down - one
-  lost Wi-Fi packet must not open the relay for a whole `CHECK_INTERVAL`. A
-  *refused* connection counts as up: the reset came from the device itself.
-  Some devices drop rather than refuse, so a port it really listens on is the
-  safe choice. `python check.py` prints what the sentinel says right now.
-- **Silence means down.** Anything but an answer holds the night off. Wrong
-  that way, the load tops up at the day tariff; wrong the other way, the
+**What "the inverter has the grid" means.** The cloud has no relay or
+connection field - all 113 measure points were checked. But the inverter's
+own history on this site shows how it says no:
+
+| what the inverter reports | what it means | seen here |
+|---|---|---|
+| `GridFrequency` 50 Hz, every phase present | it is using the grid | 11-03 01:01: buying 3.9 kW with the weakest phase at 188.6 V |
+| `GridFrequency` **0 Hz**, voltage still there | it **refused** the grid as too weak | 11-04 18:34:52: phases at 176-185 V, and a `W3 Grid_Phase_Wrong` alert at the same second |
+| a phase under 100 V | a phase is missing; a three-phase inverter cannot use that | 11-04 07:23:52: L2 at 0 V after an outage, L1 and L3 back |
+| 0 V and 0 Hz | outage | every scheduled cut |
+
+So no grid is any of: 0 Hz, a phase under 100 V, or a reading older than
+`DEYE_MAX_AGE`. The inverter's cutoff on this site sits around 181 V on the
+weakest phase. That figure is not configured anywhere here; it is whatever
+the inverter itself decides, which is the point.
+
+**Even accepted, the grid has to be held.** A weak grid flaps: on 11-04
+between 18:27 and 18:44 the inverter refused it, took it back, and refused it
+again, minute after minute. A socket closed on the first good minute is a
+socket on the battery the next. So the night buys only once the inverter has
+held the grid for `DEYE_GRID_SETTLE` seconds (600 by default) without one
+refused reading in between, timed on the logger's own timestamps. A single
+refusal starts the wait again. It also covers the inverter's own reconnect
+delay after an outage. After a restart the wait starts from the first reading
+seen, which errs towards waiting.
+
+**`GridStatus` is not the connection.** It names which way energy flows:
+`Purchasing energy` (importing), `Grid connected` (exporting), and `Static`
+(nothing flowing). It reads `Static` through an outage **and** through a sunny
+afternoon with 233 V on every phase, so it is recorded for the page and never
+decided on.
+
+**Check every minute.** The grid can only be judged as often as the watcher
+asks. With `CHECK_INTERVAL=600` a refusal can go unseen for ten minutes, the
+socket drawing on the battery all the while, and a refusal between two passes
+is missed entirely. The logger uploads about every 60 s, and the cloud is
+asked at most once a minute whatever the interval, so `CHECK_INTERVAL=60`
+costs no extra quota beyond those 45,000 calls a month.
+
+At least one of the two has to be configured, or the watcher refuses to
+start. Either works alone.
+
+**Why the inverter goes through the cloud.** This site's logger (a
+`DYDA_WiBLE` stick) has no local Modbus - ports 8899 and 502 are closed, and
+its web page is an encrypted setup form - so the cloud is the only way in.
+That has a cost: an outage can take the router or the ISP with it, the logger
+stops uploading, and its last reading says "grid held" for as long as the
+outage lasts. `DEYE_MAX_AGE` is what stops that being believed. Keep it short.
+
+**Setting up the inverter.**
+
+- Register an app at developer.deyecloud.com. That gives `DEYE_APP_ID` and
+  `DEYE_APP_SECRET`.
+- Set `DEYE_EMAIL` and `DEYE_PASSWORD` to the Deye Cloud login the station
+  belongs to. The app keys say which program is asking; the login says whose
+  inverter it may read. A second account the station is shared with view-only
+  keeps your own password off the Pi.
+- `DEYE_API_URL` is the account's region: `eu1-developer` for Europe (the
+  default), `us1-developer` for the Americas.
+
+The station and the inverter's serial are looked up once, on the first pass.
+The password is sent only as the SHA-256 hash the API asks for, and none of
+the four keys is ever logged or put on the page.
+
+**Quota.** The watcher asks for a reading at most once a minute, whatever
+`CHECK_INTERVAL` says - the logger does not upload faster than that. That is
+under 45,000 calls a month, against the developer plan's 100,000. The token
+lasts about 60 days and is renewed a day early.
+
+- **How the sentinel is asked.** A TCP connection to `BLACKOUT_SENTINEL_PORT`
+  (default 80), 2 s timeout, tried twice a second apart before it is called
+  silent - one lost Wi-Fi packet must not open the relay for a whole
+  `CHECK_INTERVAL`. A *refused* connection counts as up: the reset came from
+  the device itself. Some devices drop rather than refuse, so a port it really
+  listens on is the safe choice.
+- **The sentinel is asked even while the inverter decides**, so the two can be
+  compared. When they contradict each other about whether there is any mains
+  at all, the Log gets one `warn` line saying so, and the inverter is
+  believed. A sentinel that has been unplugged reads exactly like an outage;
+  that line is how you find out. A weak grid the inverter refuses still powers
+  the sentinel, so that is not counted as a contradiction.
+- **No answer means down.** Anything but a clear "up" holds the night off.
+  Wrong that way, the load tops up at the day tariff; wrong the other way, the
   battery is gone.
 - **Only the night.** The `SOLAR_START`-`SOLAR_END` top-up is unchanged - it
   runs on the roof first, and the budget and clock brakes still bound it.
 - **The budget does not move.** A night cut short by an outage just leaves
   more for the day to top up, through the same meter.
 
-The sentinel is asked on every pass while blackout mode is on, whatever
+`python check.py` prints the weakest phase and the frequency right now, how
+long the inverter has held the grid, how old that reading is, and which of the
+two the night would believe.
+
+The grid is asked on every pass while blackout mode is on, whatever
 `MONITOR_DAYTIME` says, so the page always knows and the record shows the
-outages themselves. On the page: a `blackout · sentinel online` badge in
-the header, turning red with `OFFLINE` the moment the sentinel goes silent
-(hover it for the address and what that means), the same `sentinel ... online` / `OFFLINE` line on the Socket card, a red rule above the plug
-band on the chart for every outage, a `grid` row in the hover, and the hours
-the grid was down in the Nights table. The Log says what the sentinel answered
-on the first pass after every start - `sentinel <ip>:<port> is online - grid
-up`, or a warn line if it is OFFLINE - and then one line per change, and the verdict reads
-"would buy ... - but `<ip>` is not answering, so the grid is down: holding off".
+outages themselves. On the page:
+
+- **Header badge.** `blackout · grid up · inverter`. It turns red with
+  `DOWN` the moment the grid is gone or refused, amber with `settling` while
+  the inverter holds a grid that has not yet lasted `DEYE_GRID_SETTLE`, and
+  says `sentinel` instead of `inverter` whenever the sentinel was the one
+  deciding. Hover it for what each one said.
+- **Socket card.** The same answer in words: `inverter 205 V`, `inverter
+  rejected it · 176 V`, `inverter: a phase is missing`, `inverter held it
+  4 min of 10 min`, or the sentinel's address and `(inverter silent)` when the
+  cloud could not say.
+- **Chart.** A red rule above the plug band for every stretch the night could
+  not buy - outage, refusal or settling.
+- **Hover.** A `grid` row naming the source, and an `inverter` row with the
+  weakest phase, the frequency, how long the grid had been held (or
+  `rejected`), the `GridStatus` flow word and how old the reading was -
+  marked `(too old)` when it was passed over.
+- **Nights table.** The hours the grid was down.
+
+Every one of those numbers is in the CSV too: `grid_source`, `grid_volts`
+(the weakest phase), `grid_hz`, `grid_age_s`, `grid_status`, and
+`grid_stable_s` (how long the inverter had held the grid, empty when it was
+refused).
+
+The Log says what the grid was on the first pass after every start, then one
+line per change - `grid went DOWN - the inverter rejected the grid (0 Hz,
+weakest phase 176 V), the night will not buy`, `grid is back - the inverter
+has the grid, weakest phase 205 V, 50.0 Hz`. It also says once when the
+inverter stops being believed and once when it is believed again. The verdict
+reads "would buy ... - but the inverter has held the grid only 4 of 10 min, so
+the grid is down: holding off".
 
 It is an `.env` switch, not a page control: turning it on or off is a
 container restart.
@@ -423,8 +577,8 @@ Turning the socket on does not by itself import from the grid - a hybrid
 inverter will happily serve that load from the battery, which is the opposite of
 the intent. The night boost only saves money if the inverter is also told to run
 on grid (or to grid-charge) during those hours, via its time-of-use schedule in
-its own app. That schedule is set once, by hand; this program never talks to
-the inverter.
+its own app. That schedule is set once, by hand; this program never writes
+to the inverter, and only ever reads whether its grid is there.
 
 ## Notes
 
@@ -440,8 +594,9 @@ the inverter.
 - **Upgrading from an older build**: nothing to do. Retired columns - `soc`
   and the inverter power flows, and now `spare_kw` - stay in `data/history.db`
   because migration only ever adds, and simply go NULL from the first pass
-  onward. Retired `.env` keys (`DEYE_*`, `SOLAR_SURPLUS_ON_KW`,
-  `SOLAR_SURPLUS_OFF_KW`) are ignored and can be deleted.
+  onward. Retired `.env` keys (`SOLAR_SURPLUS_ON_KW`, `SOLAR_SURPLUS_OFF_KW`)
+  are ignored and can be deleted. The `DEYE_*` keys are back, for blackout
+  mode's grid reading only - see above.
 - Set `TZ` in `.env` if you want the log timestamps in your local time.
 
 ## Building locally instead of pulling

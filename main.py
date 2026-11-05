@@ -3,8 +3,9 @@ cheap night grid only for the part the sun cannot cover.
 
 Two numbers decide everything: the plug's own meter, which says how much the
 load has already had today, and the Open-Meteo yield forecast for this roof,
-which says how much the day is going to hand over for nothing. Nothing is
-read from the inverter.
+which says how much the day is going to hand over for nothing. The inverter
+is read for one thing only - whether the grid is there, in blackout mode -
+and never reaches the arithmetic below.
 
 The load owes itself DEVICE_DAILY_KWH every day. There are two chances to
 give it that, and the plug's meter keeps a single running total, so the two
@@ -27,8 +28,10 @@ Outside both windows the socket stays off.
 BLACKOUT_MODE adds one more condition to the night, and only to the night:
 during scheduled outages the house runs on its battery, and "cheap grid" at
 00:00 would really be the battery being drained into the load. So the night
-buys only while BLACKOUT_SENTINEL_IP - a device on a circuit the battery does
-not back up - answers on the LAN. The day window is left alone.
+buys only while the grid is there: by the inverter's own grid voltage, read
+off the Deye Cloud, or - when the cloud cannot say, or says it too late - by
+whether BLACKOUT_SENTINEL_IP, a device on a circuit the battery does not back
+up, answers on the LAN. The day window is left alone.
 
 All of that can be suspended from the page. Paused, the watcher still reads
 the meter, still fetches the sky and still records every pass - it simply
@@ -53,6 +56,7 @@ import time
 from datetime import datetime, timedelta
 
 import dashboard
+import deye_cloud
 import history
 import solar_forecast
 from solar_forecast import in_window, parse_hhmm, window_hours
@@ -112,6 +116,22 @@ BLACKOUT_SENTINEL_IP = config("BLACKOUT_SENTINEL_IP", "", required=False).strip(
 # actually listens on is safer, because some devices drop rather than refuse.
 BLACKOUT_SENTINEL_PORT = int(config("BLACKOUT_SENTINEL_PORT", "80", required=False))
 
+# The inverter's own view of the grid, from the Deye Cloud: blackout mode's
+# first opinion whenever its credentials are set, with the sentinel above as
+# the fallback. A reading older than DEYE_MAX_AGE is no answer at all - an
+# outage can take the internet with it, and the last thing the logger managed
+# to upload would then say "grid up" for as long as the outage lasts.
+DEYE_APP_ID = config("DEYE_APP_ID", "", required=False).strip()
+DEYE_API_URL = config("DEYE_API_URL", "https://eu1-developer.deyecloud.com",
+                      required=False).strip()
+DEYE_MAX_AGE = float(config("DEYE_MAX_AGE", "300", required=False))
+# How long the inverter must have held the grid, without a single rejected
+# reading, before the night buys from it. A weak grid here flaps - rejected,
+# taken back, rejected again, a minute apart for a quarter of an hour - and a
+# socket closed on the first good minute is a socket on the battery the next.
+# It also covers the inverter's own reconnect delay after an outage.
+DEYE_GRID_SETTLE = float(config("DEYE_GRID_SETTLE", "600", required=False))
+
 # Where the history lives, how long it is kept, and how often an unchanged
 # state is re-recorded. Changes are always recorded at once; this interval only
 # governs the quiet stretches, and keeps the Pi's SD card from being written
@@ -136,16 +156,24 @@ def log(message, level="info", category="system"):
         LOGBOOK.event(message, level, category)
 
 
-def announce_control(enabled):
-    """Log a flip of the page's switch, on the thread that served the click.
+def announce_control(name, on):
+    """Log a flip of one of the page's switches, on the thread that served the click.
 
-    The loop reads the switch itself on its next pass, so this changes
-    nothing - it only means the Log panel shows the pause at the second it
+    The loop reads the switches itself on its next pass, so this changes
+    nothing - it only means the Log panel shows the flip at the second it
     happened rather than up to a CHECK_INTERVAL later.
     """
-    log("resumed from the page - switching the socket again" if enabled
+    if name == history.CONTROL_INVERTER:
+        log("inverter switched back ON from the page - it decides the grid again,"
+            " after holding it for %d min" % (DEYE_GRID_SETTLE // 60) if on
+            else "inverter switched OFF from the page - %s" % (
+                "only the sentinel decides the grid" if BLACKOUT_SENTINEL_IP
+                else "nothing decides the grid, so the night will not buy"),
+            "info" if on else "warn", "system")
+        return
+    log("resumed from the page - switching the socket again" if on
         else "PAUSED from the page - the socket is left exactly as it is",
-        "info" if enabled else "warn", "decision")
+        "info" if on else "warn", "decision")
 
 
 def settings():
@@ -166,8 +194,24 @@ def settings():
         "house_daytime_kwh": HOUSE_DAYTIME_KWH,
         "blackout_mode": BLACKOUT_MODE,
         "blackout_sentinel": "%s:%d" % (BLACKOUT_SENTINEL_IP, BLACKOUT_SENTINEL_PORT)
-                             if BLACKOUT_MODE else None,
+                             if BLACKOUT_MODE and BLACKOUT_SENTINEL_IP else None,
+        "blackout_inverter": BLACKOUT_MODE and bool(DEYE_APP_ID),
+        "inverter_max_age": DEYE_MAX_AGE,
+        "inverter_settle": DEYE_GRID_SETTLE,
     }
+
+
+def inverter():
+    """The Deye Cloud client, or None when blackout mode has no use for one.
+
+    Read here rather than at import, like the Tapo login: the secret, the
+    email and the password are never module constants, so nothing that walks
+    this module - settings() above, a test, a traceback - can stumble on them.
+    """
+    if not (BLACKOUT_MODE and DEYE_APP_ID):
+        return None
+    return deye_cloud.Cloud(DEYE_API_URL, DEYE_APP_ID, config("DEYE_APP_SECRET"),
+                            config("DEYE_EMAIL"), config("DEYE_PASSWORD"))
 
 
 class Plug:
@@ -365,19 +409,21 @@ def spent_so_far(delivered, ran_hours):
     return ", ".join(parts)
 
 
-def decide_night(outlook, wet_fraction, delivered, ran_hours=0.0, grid_up=None):
+def decide_night(outlook, wet_fraction, delivered, ran_hours=0.0, grid_up=None,
+                 grid_said=None):
     """(socket on?, why) inside the cheap-grid window.
 
     In blackout mode a night that wants to buy also needs the grid to be there.
-    Anything but a positive answer from the sentinel holds off: the cost of
-    being wrong one way is a load topped up at the day tariff, the other way
-    is a battery emptied into hot water before the house needs it.
+    Anything but a positive answer holds off: the cost of being wrong one way
+    is a load topped up at the day tariff, the other way is a battery emptied
+    into hot water before the house needs it. `grid_said` is GridWatch's
+    account of who said the grid was down, for the reason line.
     """
     on, why = night_verdict(outlook, wet_fraction, delivered, ran_hours)
     if on and BLACKOUT_MODE and grid_up is not True:
+        said = grid_said or "%s is not answering, so the grid is down" % BLACKOUT_SENTINEL_IP
         return False, why.replace(" - buying", " - would buy", 1) + \
-            " - but %s is not answering, so the grid is down: holding off" % \
-            BLACKOUT_SENTINEL_IP
+            " - but %s: holding off" % said
     return on, why
 
 
@@ -452,8 +498,9 @@ class Recorder:
         self._pruned_at = time.monotonic()
 
     def record(self, **fields):
-        key = (fields.get("socket_on"), fields.get("wanted"),
-               fields.get("enabled"), fields.get("grid_up"), fields.get("reason"))
+        key = (fields.get("socket_on"), fields.get("wanted"), fields.get("enabled"),
+               fields.get("inverter_enabled"), fields.get("grid_up"),
+               fields.get("grid_source"), fields.get("reason"))
         now = time.monotonic()
         if key == self._key and now - self._written_at < self._interval:
             return
@@ -466,7 +513,7 @@ class Recorder:
             self._logbook.prune()
 
 
-async def grid_present():
+async def sentinel_answers():
     """Whether the blackout sentinel answers, knocked twice before it is called down.
 
     Twice because one lost packet on Wi-Fi would otherwise open the relay for a
@@ -481,6 +528,155 @@ async def grid_present():
         if attempt == 1:
             await asyncio.sleep(1)
     return False
+
+
+class GridWatch:
+    """Blackout mode's answer to "is the grid there?", and who gave it.
+
+    The inverter first, and its own verdict rather than a threshold of ours:
+    it reports 0 Hz the moment it refuses the grid, however much voltage is
+    left, and a phase reading 0 V is a phase it cannot use. Even accepted, the
+    grid is only "up" once the inverter has held it for DEYE_GRID_SETTLE
+    without a rejection in between, timed on the logger's own clock - a weak
+    grid flaps, and the inverter waits out its own reconnect delay too.
+
+    The inverter is only reachable through the cloud, so whenever the cloud
+    cannot answer, or its reading is older than DEYE_MAX_AGE, the sentinel
+    decides instead. It cannot see a weak grid - the device behind it stays
+    powered at 175 V - only a dead one. Neither answering is not "up".
+
+    The sentinel is knocked on every pass even while the inverter is being
+    believed, so a contradiction between them reaches the log rather than
+    waiting for the night the inverter goes quiet to be discovered.
+    """
+
+    def __init__(self, cloud):
+        self._cloud = cloud
+        self._trouble = None        # why the inverter is not being believed now
+        self._disagree = False
+        self._last = None           # (up, source) as last reported
+        self._held_since = None     # logger time the inverter last took the grid
+
+    async def read(self, ask_inverter=True):
+        """(the grid_* fields for the record, the reason-line phrase).
+
+        `ask_inverter` is the page's switch. Off, the cloud is not called at
+        all, and the inverter's hold on the grid is forgotten: switched back
+        on, it has to be seen holding the grid for the whole settle time
+        again, rather than trusting a run it was not watched for.
+        """
+        fields = {"grid_up": None, "grid_source": None, "grid_volts": None,
+                  "grid_hz": None, "grid_age_s": None, "grid_status": None,
+                  "grid_stable_s": None}
+        reading = None
+        if self._cloud is not None and not ask_inverter:
+            self._held_since = None
+        elif self._cloud is not None:
+            try:
+                reading = await asyncio.to_thread(self._cloud.grid)
+            except deye_cloud.DeyeError as exc:
+                self._doubt("cannot be read (%s)" % exc)
+            else:
+                age = max(0.0, time.time() - reading["collected"])
+                stable = self._hold(reading)
+                fields.update(grid_volts=reading["volts"], grid_hz=reading["hz"],
+                              grid_age_s=round(age), grid_status=reading["status"],
+                              grid_stable_s=None if stable is None else round(stable))
+                if age > DEYE_MAX_AGE:
+                    self._doubt("last reported %d min ago" % (age // 60))
+                    reading = None
+                else:
+                    self._doubt(None)
+
+        sentinel = await sentinel_answers() if BLACKOUT_SENTINEL_IP else None
+        where = "%s:%d" % (BLACKOUT_SENTINEL_IP, BLACKOUT_SENTINEL_PORT)
+        if reading is not None:
+            up, said = self._verdict(reading, fields["grid_stable_s"])
+            fields.update(grid_up=up, grid_source="inverter")
+            self._compare(reading, sentinel, where)
+        elif sentinel is not None:
+            fields.update(grid_up=sentinel, grid_source="sentinel")
+            said = "sentinel %s %s" % (where, "answers" if sentinel else "is not answering")
+        elif self._cloud is not None and not ask_inverter:
+            said = "the inverter is switched off from the page and there is no sentinel"
+        else:
+            said = "nothing can say whether the grid is there"
+
+        down = "%s, so the grid is down" % said if fields["grid_up"] is False else said
+        self._report(fields["grid_up"], fields["grid_source"], said)
+        return fields, down
+
+    def _hold(self, reading):
+        """Seconds the inverter has held the grid without a rejection, or None.
+
+        Kept across passes and timed on the logger's collection stamps, so a
+        cached or repeated reading does not stretch it. After a restart it
+        starts from the first reading seen, which errs towards waiting.
+        """
+        if not reading["accepted"]:
+            self._held_since = None
+            return None
+        if self._held_since is None or reading["collected"] < self._held_since:
+            self._held_since = reading["collected"]
+        return reading["collected"] - self._held_since
+
+    @staticmethod
+    def _verdict(reading, stable):
+        """(up?, the words for it) from one inverter reading."""
+        volts, hz = reading["volts"], reading["hz"]
+        if hz <= 0 and volts <= 0:
+            return False, "the inverter reads no grid (0 V)"
+        if hz <= 0:
+            return False, "the inverter rejected the grid (0 Hz, weakest phase %.0f V)" % volts
+        if volts < deye_cloud.PHASE_PRESENT_VOLTS:
+            return False, "the inverter is missing a phase (%.0f V)" % volts
+        if stable < DEYE_GRID_SETTLE:
+            return False, "the inverter has held the grid only %d of %d min" % (
+                stable // 60, DEYE_GRID_SETTLE // 60)
+        return True, "the inverter has the grid, weakest phase %.0f V, %.1f Hz" % (volts, hz)
+
+    def _doubt(self, why):
+        """Say once when the inverter stops being believed, and once when it is again."""
+        if why == self._trouble:
+            return
+        if why is None:
+            log("inverter grid reading usable again - it decides the grid", category="system")
+        elif self._trouble is None:
+            log("inverter grid reading %s - %s" % (why, "the sentinel decides until it is back"
+                if BLACKOUT_SENTINEL_IP else "the night will not buy until it is back"),
+                "warn", "system")
+        self._trouble = why
+
+    def _compare(self, reading, sentinel_up, where):
+        """Warn when the two contradict each other; the inverter is believed either way.
+
+        Only a contradiction about whether there is any mains at all. A weak
+        grid the inverter refuses still powers the sentinel, so "rejected"
+        against "answers" is the two agreeing, not a fault.
+        """
+        live = reading["volts"] >= deye_cloud.PHASE_PRESENT_VOLTS or reading["hz"] > 0
+        disagree = sentinel_up is not None and sentinel_up != live
+        if disagree and not self._disagree:
+            log("inverter reads %s but sentinel %s %s - believing the inverter" % (
+                "mains" if live else "NO mains", where,
+                "answers" if sentinel_up else "is silent"), "warn", "system")
+        elif self._disagree and not disagree:
+            log("inverter and sentinel agree on the grid again", category="system")
+        self._disagree = disagree
+
+    def _report(self, up, source, said):
+        """One line per change of answer, so outages read off the Log panel."""
+        if (up, source) == self._last:
+            return
+        first = self._last is None
+        self._last = (up, source)
+        if up is None:
+            log("grid UNKNOWN - %s, the night will not buy" % said, "warn", "system")
+        elif up:
+            log("grid %s - %s" % ("up" if first else "is back", said), category="system")
+        else:
+            log("grid %s - %s, the night will not buy" % ("DOWN" if first else "went DOWN", said),
+                "warn", "system")
 
 
 async def look_ahead(forecast, now):
@@ -533,10 +729,14 @@ async def main():
 
     if BOOST_STRATEGY not in ("forecast", "rain"):
         raise SystemExit("BOOST_STRATEGY must be 'forecast' or 'rain', not %r" % BOOST_STRATEGY)
-    if BLACKOUT_MODE and not BLACKOUT_SENTINEL_IP:
+    if BLACKOUT_MODE and not (BLACKOUT_SENTINEL_IP or DEYE_APP_ID):
         # Refused rather than guessed: with nothing to ask, every night would
         # read as an outage and the load would never get its cheap grid.
-        raise SystemExit("BLACKOUT_MODE is on but BLACKOUT_SENTINEL_IP is not set.")
+        raise SystemExit("BLACKOUT_MODE is on but neither BLACKOUT_SENTINEL_IP nor"
+                         " DEYE_APP_ID is set.")
+    # Refused at startup too, rather than discovered as an inverter that never
+    # answers: the client reads all four the moment it is built.
+    cloud = inverter()
 
     forecast = solar_forecast.from_config()
     if forecast is None:
@@ -563,6 +763,10 @@ async def main():
 
     log("controlling %s only, %.1f kWh/day budget, %.1f h/day allowance"
         % (PLUG_IP, DEVICE_DAILY_KWH, DEVICE_DAILY_HOURS))
+    if cloud is not None and not LOGBOOK.control(history.CONTROL_INVERTER, True):
+        log("inverter still switched OFF from an earlier session - %s" % (
+            "only the sentinel decides the grid" if BLACKOUT_SENTINEL_IP
+            else "nothing decides the grid, so the night will not buy"), "warn", "system")
     if not LOGBOOK.control(history.CONTROL_ENABLED, True):
         log("still PAUSED from an earlier session - the socket will not be switched"
             " until the page resumes it", "warn", "decision")
@@ -573,8 +777,14 @@ async def main():
         log("house takes %.1f kWh of the day's roof before the load sees any"
             % HOUSE_DAYTIME_KWH)
     if BLACKOUT_MODE:
-        log("BLACKOUT MODE: the night buys grid only while %s:%d answers"
-            % (BLACKOUT_SENTINEL_IP, BLACKOUT_SENTINEL_PORT), "warn", "decision")
+        sentinel = "%s:%d answers" % (BLACKOUT_SENTINEL_IP, BLACKOUT_SENTINEL_PORT)
+        log("BLACKOUT MODE: the night buys grid only while %s" % (
+            "the inverter has held the grid for %d min (Deye Cloud, at most %d min old)%s" % (
+                DEYE_GRID_SETTLE // 60, DEYE_MAX_AGE // 60, ", or when it cannot say, while " + sentinel
+                if BLACKOUT_SENTINEL_IP else "")
+            if cloud else sentinel), "warn", "decision")
+    elif DEYE_APP_ID:
+        log("DEYE_APP_ID is set but BLACKOUT_MODE is off - the inverter is not asked")
 
     # The night can only ever deliver what the load can swallow in the hours it
     # has. Worth saying once, loudly, rather than leaving it to be discovered
@@ -587,8 +797,8 @@ async def main():
                 "exactly" if reach == DEVICE_DAILY_KWH else "short of",
                 DEVICE_DAILY_KWH, SOLAR_START.strftime("%H:%M")), "warn")
 
+    grid = GridWatch(cloud)
     last_reason = None
-    last_grid = None
     was_enabled = True
     while not stop.is_set():
         now = datetime.now()
@@ -611,28 +821,17 @@ async def main():
             drawing = await plug.power_w()
             outlook, wet = await look_ahead(forecast, now)
 
-        # Whether the grid is there, by the sentinel. Asked on every pass while
-        # blackout mode is on - not only when the plug is read - so the page
-        # always knows, and the record shows the outages themselves and not
-        # just the nights they cost. Only the night decides on it.
-        grid_up = None
+        # Whether the grid is there, by the inverter or the sentinel. Asked on
+        # every pass while blackout mode is on - not only when the plug is read
+        # - so the page always knows, and the record shows the outages
+        # themselves and not just the nights they cost. Only the night decides
+        # on it.
+        # The page's other switch, read the same way and defaulting the same
+        # way: an unreadable logbook leaves the inverter asked.
+        ask_inverter = LOGBOOK.control(history.CONTROL_INVERTER, True)
+        seen, grid_said = {}, None
         if BLACKOUT_MODE:
-            grid_up = await grid_present()
-            if grid_up != last_grid:
-                where = "%s:%d" % (BLACKOUT_SENTINEL_IP, BLACKOUT_SENTINEL_PORT)
-                if last_grid is None:
-                    # The first answer after a start, said either way: silence
-                    # here would be indistinguishable from a sentinel never asked.
-                    log("sentinel %s is %s" % (where, "online - grid up" if grid_up
-                        else "OFFLINE - grid down, the night will not buy"),
-                        "info" if grid_up else "warn", "system")
-                elif grid_up:
-                    log("sentinel %s is online again - grid back" % where,
-                        category="system")
-                else:
-                    log("sentinel %s went OFFLINE - grid down, the night will not buy"
-                        % where, "warn", "system")
-                last_grid = grid_up
+            seen, grid_said = await grid.read(ask_inverter)
 
         # How long the relay has already been closed today, read back off the
         # logbook rather than counted in this process, so a restart mid-window
@@ -640,7 +839,8 @@ async def main():
         ran_hours = LOGBOOK.on_hours_today()
 
         if night:
-            wanted, reason = decide_night(outlook, wet, delivered, ran_hours, grid_up)
+            wanted, reason = decide_night(outlook, wet, delivered, ran_hours,
+                                          seen.get("grid_up"), grid_said)
         elif solar:
             # The day window needs no forecast at all - only the meter and the clock.
             wanted, reason = decide_solar(delivered, ran_hours)
@@ -689,7 +889,16 @@ async def main():
             ran_hours=ran_hours,
             free_kwh=free_kwh,
             target_kwh=target_kwh,
-            grid_up=grid_up,
+            grid_up=seen.get("grid_up"),
+            grid_source=seen.get("grid_source"),
+            grid_volts=seen.get("grid_volts"),
+            grid_hz=seen.get("grid_hz"),
+            grid_age_s=seen.get("grid_age_s"),
+            grid_status=seen.get("grid_status"),
+            grid_stable_s=seen.get("grid_stable_s"),
+            # Only meaningful where there is an inverter to ask; blank otherwise,
+            # so the page does not report a switch that changes nothing.
+            inverter_enabled=ask_inverter if cloud is not None else None,
             enabled=enabled,
             wanted=wanted,
             socket_on=socket_on,

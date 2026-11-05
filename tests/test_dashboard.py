@@ -21,7 +21,7 @@ from unittest import mock
 import dashboard
 import history
 import main
-from tests import SECRET
+from tests import SECRETS
 
 
 class Clamping(unittest.TestCase):
@@ -216,8 +216,10 @@ class Routes(unittest.TestCase):
     # -- the switch -------------------------------------------------------
 
     def tearDown(self):
-        # Every test here starts from a watcher that is switching.
+        # Every test here starts from a watcher that is switching and asking
+        # the inverter.
         self.book.set_control(history.CONTROL_ENABLED, True)
+        self.book.set_control(history.CONTROL_INVERTER, True)
 
     def test_the_state_says_the_watcher_is_switching_until_it_is_paused(self):
         self.assertIs(self.json("/api/state")["enabled"], True)
@@ -241,7 +243,7 @@ class Routes(unittest.TestCase):
     def test_the_watcher_is_told_only_when_it_actually_changed(self):
         seen = []
         server = dashboard.serve("127.0.0.1", 0, self.book, main.settings,
-                                 on_control=seen.append)
+                                 on_control=lambda name, on: seen.append((name, on)))
         port = server.server_address[1]
         try:
             for wanted in (False, False, True):
@@ -252,14 +254,35 @@ class Routes(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
-        self.assertEqual(seen, [False, True])
+        self.assertEqual(seen, [("enabled", False), ("enabled", True)])
+
+    def test_the_inverter_is_asked_until_it_is_switched_off(self):
+        self.assertIs(self.json("/api/state")["inverter"], True)
+        status, payload = self.post("/api/control", {"inverter": False})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, {"inverter": False, "stored": True})
+        self.assertIs(self.json("/api/state")["inverter"], False)
+
+    def test_the_inverter_switch_leaves_the_pause_alone(self):
+        self.post("/api/control", {"inverter": False})
+        self.assertIs(self.json("/api/state")["enabled"], True)
+        self.post("/api/control", {"enabled": False})
+        self.assertIs(self.json("/api/state")["inverter"], False)
+
+    def test_two_switches_in_one_request_are_refused(self):
+        # Which one did the page mean? Neither moves rather than guessing.
+        status, _ = self.post("/api/control", {"enabled": False, "inverter": False})
+        self.assertEqual(status, 400)
+        state = self.json("/api/state")
+        self.assertEqual((state["enabled"], state["inverter"]), (True, True))
 
     def test_a_string_is_not_a_boolean(self):
         # bool("false") is True; a switch that means the opposite of what was
         # typed is worse than one that will not move.
-        status, payload = self.post("/api/control", {"enabled": "false"})
-        self.assertEqual(status, 400)
-        self.assertIs(self.json("/api/state")["enabled"], True)
+        for name in history.CONTROLS:
+            status, payload = self.post("/api/control", {name: "false"})
+            self.assertEqual(status, 400)
+            self.assertIs(self.json("/api/state")[name], True)
 
     def test_junk_is_refused_rather_than_guessed_at(self):
         for body in (b"", b"not json", b"[]", b'{"other": true}'):
@@ -298,7 +321,8 @@ class Routes(unittest.TestCase):
     def test_no_credential_is_ever_served(self):
         for route in ("/api/state", "/api/samples", "/api/events", "/api/days"):
             _, body, _ = self.get(route)
-            self.assertNotIn(SECRET, body)
+            for secret in SECRETS:
+                self.assertNotIn(secret, body)
             self.assertNotIn("@", body)
 
     def test_a_broken_query_answers_500_instead_of_killing_the_watcher(self):

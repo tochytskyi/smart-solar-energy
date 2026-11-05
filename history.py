@@ -8,8 +8,9 @@ Four tables in one SQLite file:
              cloud outages, start-up banners. This is what it tails.
   forecasts  the hourly solar outlook as it was fetched, one row per day, so
              the chart can draw the curve the decision was actually made on.
-  control    the switches the page may throw. One so far: whether the watcher
-             is allowed to switch the socket at all. It is the only row here
+  control    the switches the page may throw: whether the watcher is allowed
+             to switch the socket at all, and whether blackout mode may ask
+             the inverter about the grid. They are the only rows here
              anything outside this process writes, and the only reason the
              dashboard is not purely a reader.
 
@@ -48,6 +49,13 @@ CREATE TABLE IF NOT EXISTS samples (
     free_kwh            REAL,
     target_kwh          REAL,
     grid_up             INTEGER,
+    grid_source         TEXT,
+    grid_volts          REAL,
+    grid_hz             REAL,
+    grid_age_s          REAL,
+    grid_status         TEXT,
+    grid_stable_s       REAL,
+    inverter_enabled    INTEGER,
     enabled             INTEGER,
     wanted              INTEGER,
     socket_on           INTEGER,
@@ -85,8 +93,9 @@ CREATE TABLE IF NOT EXISTS control (
 SAMPLE_FIELDS = (
     "phase", "strategy", "pv_forecast_kwh", "peak_kw",
     "cloud_cover", "rain_mm", "wet_fraction", "plug_power_w", "delivered_kwh",
-    "ran_hours", "free_kwh", "target_kwh", "grid_up", "enabled", "wanted", "socket_on",
-    "reason",
+    "ran_hours", "free_kwh", "target_kwh", "grid_up", "grid_source", "grid_volts",
+    "grid_hz", "grid_age_s", "grid_status", "grid_stable_s", "inverter_enabled",
+    "enabled", "wanted", "socket_on", "reason",
 )
 
 LEVELS = ("info", "warn", "error")
@@ -97,10 +106,17 @@ LEVELS = ("info", "warn", "error")
 # worse than no pause at all.
 CONTROL_ENABLED = "enabled"
 
+# Whether blackout mode may ask the inverter if the grid is there. Off, the
+# inverter's cloud is not called at all and the sentinel alone decides - for a
+# cloud that is down or answering nonsense, without editing .env and restarting. It
+# only ever narrows what the night believes: off with no sentinel configured,
+# nothing can say the grid is there and the night does not buy.
+CONTROL_INVERTER = "inverter"
+
 # Every switch that may be thrown from outside. An unknown name is refused
 # rather than created, so a stray POST cannot invent a setting the watcher
 # will never read.
-CONTROLS = (CONTROL_ENABLED,)
+CONTROLS = (CONTROL_ENABLED, CONTROL_INVERTER)
 
 # A gap longer than this between two samples is downtime, not socket time, so
 # the daily totals stop counting across it.

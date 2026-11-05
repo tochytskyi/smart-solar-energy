@@ -16,13 +16,26 @@ the relay. Paused, every pass still reads, decides and records; only the
 switching stops, so the socket keeps whatever state it was in. It also asks
 the plug what its relay is actually doing, because what it last commanded is
 no longer evidence once a person can switch it by hand - that read reaches the
-record and never a decision. It is the one
-thing on the page that changes anything, and `tests/test_contract.py::
-ThePageChangesExactlyOneThing` fails if a second one appears.
+record and never a decision.
 
-**Two inputs, and only two**: the plug's own meter and the Open-Meteo forecast.
-The inverter is not read - there was a Deye Cloud client here and it is gone.
-`tests/test_contract.py::TheInverterIsNotRead` fails if it creeps back.
+**The page can also leave the inverter out.** A second switch,
+`control.inverter`, thrown through the same route, decides whether blackout
+mode asks the Deye Cloud at all. Off, the cloud is not called and the sentinel
+alone judges the grid; switched back on, the inverter has to be seen holding
+the grid for the whole `DEYE_GRID_SETTLE` again. It can only narrow what the
+night believes - off with no sentinel, nothing says the grid is there and the
+night does not buy. These two are the only things on the page that change
+anything, and `tests/test_contract.py::ThePageChangesOnlyItsDeclaredSwitches`
+fails if a third appears.
+
+**Two inputs to the arithmetic, and only two**: the plug's own meter and the
+Open-Meteo forecast. The inverter is read for one thing - whether the grid is
+there, as blackout mode's first opinion - through the Deye Cloud, because the
+logger here speaks no local Modbus. The LAN sentinel decides whenever the cloud
+cannot answer or its reading is older than `DEYE_MAX_AGE`. There was once a
+Deye client that fed the battery and power flows into the decision; that is
+not to come back. `tests/test_contract.py::TheInverterOnlySaysWhetherTheGridIsThere`
+fails if the inverter reaches anything but `grid_up`.
 
 **The forecast reaches the decision as one number a day** - the total the roof
 should make - and it only ever sizes the night's grid buy. The day window is
@@ -39,8 +52,9 @@ windows is explained there, and it is the file to update when the rules change.
 | `main.py` | the loop: read, decide, switch, record. Every tunable is a module-level constant read from `.env` |
 | `tapo_client.py` | `.env` loading and the Tapo API client |
 | `solar_forecast.py` | Open-Meteo hourly yield for this roof, and the row covering "now" |
+| `deye_cloud.py` | Deye Cloud client: grid voltage and frequency only, for blackout mode |
 | `history.py` | the SQLite logbook: `samples`, `events`, `forecasts` |
-| `dashboard.py` | HTTP server for the page and its JSON. Reads, apart from the one route that throws the pause switch |
+| `dashboard.py` | HTTP server for the page and its JSON. Reads, apart from the one route that throws the page's two switches |
 | `dashboard.html` | the page itself - vanilla JS, hand-drawn SVG charts, no build step |
 | `check.py` | one-off status report from the terminal |
 | `demo.py` | fills a throwaway logbook with invented data and serves the page |
@@ -162,8 +176,9 @@ then crops the image, so `--window-size=400,...` shows a false clip - ask for
   on a LAN with no reverse DNS - `dashboard.Server` skips it. Do not go back to
   plain `ThreadingHTTPServer`.
 - The dashboard is **unauthenticated**, on the LAN by design, and it writes
-  exactly one thing: the pause switch, through `POST /api/control`. Anyone who
-  can reach the page can stop the watcher heating, which is the whole reason
+  two booleans, one per request, through `POST /api/control`: the pause, and
+  whether the inverter is asked about the grid. Anyone who can reach the page
+  can stop the watcher heating, which is the whole reason
   the port must not be forwarded - `docker-compose.yml` has an optional ngrok
   profile that does exactly that, and turning it on puts the switch on the
   public internet with no password in front of it. Never add a second writing
@@ -180,9 +195,9 @@ then crops the image, so `--window-size=400,...` shows a false clip - ask for
   `PV_PERFORMANCE_RATIO` to daily generation; it lands near 0.39 and the
   watcher then buys grid every night of the year. Only days the system could
   not fill its own demand measure the model. Those are also the only days the
-  decision is close, so that is the sample that matters. (The watcher no longer
-  reads the inverter at all, so this calibration is now a manual, occasional
-  job against whatever the inverter's own app reports.)
+  decision is close, so that is the sample that matters. (The watcher reads
+  only the inverter's grid status, never its generation, so this calibration
+  is a manual, occasional job against whatever the inverter's own app reports.)
 - **The day being judged follows the solar window, not the night one.**
   `solar_forecast.target_day` takes `SOLAR_END`: today until the roof's day is
   spent, tomorrow from then on. Keying it to `NIGHT_START` reads as equivalent
@@ -190,6 +205,20 @@ then crops the image, so `--window-size=400,...` shows a false clip - ask for
   and the log reported the shortfall for a day that was already over, right up
   until midnight rolled the date. No switch was ever wrong, because nothing is
   switched outside the windows; everything you read for those six hours was.
+- **A cloud reading of the grid can be a lie by omission.** An outage can take
+  the router with it; the logger stops uploading and its last reading says
+  "grid up" all night. `GridWatch` treats anything older than `DEYE_MAX_AGE` as
+  no answer and asks the sentinel. Never drop the age check, and never let a
+  failing cloud read as "up".
+- **The inverter refuses a weak grid by reporting 0 Hz, and `GridStatus` is not
+  the connection.** There is no relay field in the cloud. Measured here: the
+  inverter bought 3.9 kW at 188 V, then at 176-185 V reported `GridFrequency`
+  0 with the voltage still there, flapping in and out for 17 minutes.
+  `GridStatus` is the flow direction - `Static` means nothing crossing the
+  meter, outage or sunny afternoon alike. So the inverter's 0 Hz is the
+  verdict, a phase under 100 V is a missing one, and `DEYE_GRID_SETTLE` makes
+  the night wait out the flapping. Do not replace this with a voltage floor of
+  our own, and do not decide on `GridStatus`.
 - Open-Meteo stamps an hourly row with the **end** of the hour it covers: the
   14:00 row is the mean irradiance over 13:00-14:00, not a reading at 14:00.
   `solar_forecast._covers` is what stops a window sliding an hour early. Ask for
