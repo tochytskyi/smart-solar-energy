@@ -76,9 +76,10 @@ def curve(day, bright):
     for index in range(SOLAR_TO - SOLAR_FROM):
         middle = SOLAR_FROM + index + 0.5
         kw = max(0.0, math.sin((middle - 6.5) / 11.0 * math.pi)) * (6.4 if bright else 2.1)
-        # Thickening cloud through the afternoon and one wet hour, so the
-        # hourly panel has more to show than a clean arc.
-        kw *= 1.0 if index < 4 else 0.55 if index == 5 else 0.8
+        # Morning haze, thickening cloud through the afternoon and one wet
+        # hour, so the hourly panel has more to show than a clean arc - and
+        # blackout mode's day window has a weak first hour to sit out.
+        kw *= 0.3 if index == 0 else 1.0 if index < 4 else 0.55 if index == 5 else 0.8
         rows.append({
             "time": datetime.combine(day, clock(SOLAR_FROM)) + timedelta(hours=index + 1),
             "kw": round(kw, 2),
@@ -98,19 +99,23 @@ def curve(day, bright):
 
 
 def plan(outlook):
-    """(free kWh, grid kWh, wet fraction) - main.py's arithmetic, on this curve.
+    """(free kWh, grid kWh, wet fraction, strong hours) - main.py's arithmetic.
 
     The day's total less the house, exactly as `free_solar_kwh` does it, so
     the page's hourly panel and its day-ahead card agree here for the same
-    reason they agree on the Pi.
+    reason they agree on the Pi. Blackout mode is on in SETTINGS, so the night
+    buys all or nothing, as `night_target_kwh` does it there.
     """
-    free = min(SETTINGS["device_daily_kwh"],
-               max(0.0, outlook["pv_kwh"] - SETTINGS["house_daytime_kwh"]))
-    target = min(SETTINGS["device_daily_kwh"],
-                 max(0.0, SETTINGS["device_daily_kwh"] - free))
+    daily, power = SETTINGS["device_daily_kwh"], SETTINGS["device_power_kw"]
+    free = min(daily, max(0.0, outlook["pv_kwh"] - SETTINGS["house_daytime_kwh"]))
+    strong = sum(1 for row in outlook["hours"] if row["kw"] >= power)
+    if SETTINGS["blackout_mode"]:
+        target = 0.0 if free >= daily and strong * power >= daily else daily
+    else:
+        target = min(daily, max(0.0, daily - free))
     wet = sum(1 for row in outlook["hours"]
               if row["precipitation"] >= 0.1 or row["precipitation_probability"] >= 60)
-    return round(free, 2), round(target, 2), wet / float(len(outlook["hours"]))
+    return round(free, 2), round(target, 2), wet / float(len(outlook["hours"])), strong
 
 
 # The stretch the demo has the watcher paused for, in hours before now.
@@ -196,8 +201,8 @@ def fill(book):
         # hours left, tomorrow from the moment it runs out - so the evening's
         # numbers preview the night that is coming, not the day just spent.
         judged = outlook if hour < SOLAR_TO else ahead
-        free, target, wet = plan(judged)
-        # Only for the hourly log line below - no decision reads this.
+        free, target, wet, strong = plan(judged)
+        # This hour's forecast: blackout mode's day window runs only on it.
         row = judged["hours"][int(hour) - SOLAR_FROM] if solar else None
 
         mains = grid_is_up(local)
@@ -270,7 +275,9 @@ def fill(book):
             wanted = delivered < target
             reason = ("%.1f kWh sun, house takes %.1f - %.1f kWh reaches the load free"
                       % (judged["pv_kwh"], SETTINGS["house_daytime_kwh"], free))
-            reason += (" - buying %.1f kWh of it from the grid" % target if target
+            reason += ", %d h at %.1f kW or more" % (strong, SETTINGS["device_power_kw"])
+            reason += (" - short of the whole %.1f kWh - buying %.1f kWh from the grid, none"
+                       " of it left to the roof" % (SETTINGS["device_daily_kwh"], target) if target
                        else " - covers %.1f kWh, waiting for sun" % SETTINGS["device_daily_kwh"])
             if wanted and grid_up is None:
                 wanted = False
@@ -285,6 +292,12 @@ def fill(book):
             reason = ("%.1f of %.1f kWh, %.1f of %.1f h so far - topping up from roof and grid"
                       % (delivered, SETTINGS["device_daily_kwh"],
                          ran_hours, SETTINGS["device_daily_hours"]))
+            if wanted and row["kw"] < SETTINGS["device_power_kw"]:
+                wanted = False
+                reason = reason.replace(" - topping up", " - would top up") + \
+                    " - but this hour is forecast at %.1f kW, under the load's %.1f: holding" \
+                    " off rather than running on the battery" % (
+                        row["kw"], SETTINGS["device_power_kw"])
         else:
             wanted, reason = False, "outside both windows"
 
@@ -326,6 +339,7 @@ def fill(book):
             delivered_kwh=round(delivered, 2),
             ran_hours=round(ran_hours, 3),
             free_kwh=free, target_kwh=target, grid_up=grid_up,
+            hour_kw=row["kw"] if row else None, strong_hours=strong,
             grid_source=source,
             grid_volts=volts if asked else None, grid_hz=hz if asked else None,
             grid_age_s=round(age) if asked else None,

@@ -232,6 +232,18 @@ def covers(stamp):
     return stamp - timedelta(hours=1)
 
 
+def hour_at(outlook, moment):
+    """The outlook's row for the hour `moment` falls in, or None.
+
+    Matched on the hour the row covers, not on its stamp - the 14:00 row is
+    what 13:30 gets.
+    """
+    for row in outlook["hours"]:
+        if covers(row["time"]) <= moment < row["time"]:
+            return row
+    return None
+
+
 def _mean(values):
     numbers = [value for value in values if value is not None]
     return sum(numbers) / float(len(numbers)) if numbers else None

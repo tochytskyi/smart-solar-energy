@@ -215,8 +215,9 @@ class BlackoutMode(unittest.TestCase):
     def test_a_night_with_nothing_to_buy_says_nothing_about_the_grid(self):
         # The gate only ever turns an ON into an off; an off verdict keeps its
         # own reason, so the log does not blame an outage for a sunny forecast.
+        # 20 kWh in four 5 kW hours: the roof carries the whole ration.
         with constants(BLACKOUT_MODE=True, BLACKOUT_SENTINEL_IP="10.0.0.9"):
-            on, why = main.decide_night(outlook(20.0), 0.0, 0.0, 0.0, False)
+            on, why = main.decide_night(outlook(5.0, 5.0, 5.0, 5.0), 0.0, 0.0, 0.0, False)
         self.assertFalse(on)
         self.assertNotIn("not answering", why)
 
@@ -227,10 +228,89 @@ class BlackoutMode(unittest.TestCase):
         self.assertFalse(on)
         self.assertIn("would buy grid", why)
 
-    def test_the_day_window_is_left_alone(self):
+    def test_the_day_window_does_not_ask_about_the_grid(self):
+        # Only the hour's forecast gates it - a 3 kW hour runs whatever the
+        # sentinel says, because nothing here even asked.
         with constants(BLACKOUT_MODE=True, BLACKOUT_SENTINEL_IP="10.0.0.9"):
-            on, _ = main.decide_solar(0.0, 0.0)
+            on, _ = main.decide_solar(0.0, 0.0, 3.0)
         self.assertTrue(on)
+
+
+class BlackoutAllOrNothing(unittest.TestCase):
+    """BLACKOUT_MODE never splits the ration between the roof and the night.
+
+    The roof gets the day only when the total less the house fills the 6 kWh
+    AND the hours forecast at 2 kW or more can carry it at 2 kW - three of
+    them. Anything less and the night buys all 6.
+    """
+
+    def target(self, *kws):
+        with constants(BLACKOUT_MODE=True, BLACKOUT_SENTINEL_IP="10.0.0.9"):
+            return main.night_target_kwh(outlook(*kws))
+
+    def test_a_shortfall_is_bought_whole(self):
+        # 12 kWh, 4 free: outside blackout mode the night would buy 2.
+        self.assertAlmostEqual(self.target(4.0, 4.0, 4.0), 6.0)
+
+    def test_a_day_that_carries_it_all_buys_nothing(self):
+        self.assertAlmostEqual(self.target(5.0, 5.0, 5.0), 0.0)
+
+    def test_a_big_total_spread_thin_is_bought_whole(self):
+        # 16 kWh, so 6 free - but every hour is 1.6 kW, under the gate. The
+        # day window would never open, so the night must not count on it.
+        self.assertAlmostEqual(self.target(*([1.6] * 10)), 6.0)
+
+    def test_three_strong_hours_are_exactly_enough(self):
+        # 14 kWh: 6 free, and three 2.0 kW hours carry exactly 6.
+        self.assertAlmostEqual(self.target(2.0, 2.0, 2.0, 8.0), 0.0)
+        self.assertAlmostEqual(self.target(1.99, 1.99, 2.0, 8.02), 6.0)
+
+    def test_the_reason_says_it_is_buying_the_whole_day(self):
+        with constants(BLACKOUT_MODE=True, BLACKOUT_SENTINEL_IP="10.0.0.9"):
+            on, why = main.decide_night(outlook(4.0, 4.0, 4.0), 0.0, 0.0, 0.0, True)
+        self.assertTrue(on)
+        self.assertIn("3 h at 2.0 kW or more", why)
+        self.assertIn("buying 6.0 kWh", why)
+        self.assertIn("none of it left to the roof", why)
+
+    def test_off_it_still_buys_only_the_shortfall(self):
+        with constants(BLACKOUT_MODE=False):
+            self.assertAlmostEqual(main.night_target_kwh(outlook(4.0, 4.0, 4.0)), 2.0)
+            self.assertAlmostEqual(main.night_target_kwh(outlook(*([1.6] * 10))), 0.0)
+
+
+class BlackoutStrongHours(unittest.TestCase):
+    """BLACKOUT_MODE's day window runs only in hours forecast at DEVICE_POWER_KW or more."""
+
+    def decide(self, hour_kw, delivered=0.0, ran_hours=0.0, blackout=True):
+        with constants(BLACKOUT_MODE=blackout, BLACKOUT_SENTINEL_IP="10.0.0.9"):
+            return main.decide_solar(delivered, ran_hours, hour_kw)
+
+    def test_a_strong_hour_runs(self):
+        self.assertTrue(self.decide(2.5)[0])
+
+    def test_an_hour_at_exactly_the_load_runs(self):
+        self.assertTrue(self.decide(2.0)[0])
+
+    def test_a_weak_hour_holds_off_and_says_why(self):
+        on, why = self.decide(1.4)
+        self.assertFalse(on)
+        self.assertIn("would top up", why)
+        self.assertIn("1.4 kW, under the load's 2.0", why)
+
+    def test_no_forecast_for_the_hour_holds_off(self):
+        on, why = self.decide(None)
+        self.assertFalse(on)
+        self.assertIn("no forecast for this hour", why)
+
+    def test_a_spent_ration_keeps_its_own_reason(self):
+        on, why = self.decide(0.5, delivered=6.0)
+        self.assertFalse(on)
+        self.assertNotIn("forecast", why)
+
+    def test_off_the_hour_changes_nothing(self):
+        self.assertTrue(self.decide(0.0, blackout=False)[0])
+        self.assertTrue(self.decide(None, blackout=False)[0])
 
 
 class GridSaid(unittest.TestCase):

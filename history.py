@@ -48,7 +48,9 @@ CREATE TABLE IF NOT EXISTS samples (
     ran_hours           REAL,
     free_kwh            REAL,
     target_kwh          REAL,
-    grid_up             INTEGER,
+    hour_kw             REAL,
+    strong_hours        REAL,
+    grid_up            INTEGER,
     grid_source         TEXT,
     grid_volts          REAL,
     grid_hz             REAL,
@@ -94,7 +96,7 @@ CREATE TABLE IF NOT EXISTS control (
 SAMPLE_FIELDS = (
     "phase", "strategy", "pv_forecast_kwh", "peak_kw",
     "cloud_cover", "rain_mm", "wet_fraction", "plug_power_w", "delivered_kwh",
-    "ran_hours", "free_kwh", "target_kwh", "grid_up", "grid_source", "grid_volts",
+    "ran_hours", "free_kwh", "target_kwh", "hour_kw", "strong_hours", "grid_up", "grid_source", "grid_volts",
     "grid_hz", "grid_age_s", "grid_status", "grid_stable_s", "inverter_enabled",
     "sentinel_enabled", "enabled", "wanted", "socket_on", "reason",
 )

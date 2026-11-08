@@ -720,6 +720,9 @@ function renderCards(data) {
       ${hoursCap > 0 ? `<div class="row"><span>on time</span><span>${ranHours == null ? "—"
         : n1(ranHours) + " / " + n1(hoursCap) + " h"}</span></div>` : ""}
       ${todays ? `<div class="row"><span>roof forecast</span><span>${n1(todays.pv_kwh, " kWh")}</span></div>` : ""}
+      ${s.hour_kw != null ? `<div class="row"><span>this hour</span><span${set.blackout_mode
+        && s.hour_kw < set.device_power_kw ? ' style="color:var(--warn)"' : ""}>${
+        n1(s.hour_kw, " kW")} forecast</span></div>` : ""}
     </div>
   `));
 
@@ -729,7 +732,11 @@ function renderCards(data) {
   const judged = judgedDay(set, data.now);
   const ahead = curves.find((curve) => curve.day === judged);
   const share = s.target_kwh;      /* NOT `target` above - that is the budget */
-  const sun = s.free_kwh;
+  /* Blackout mode does not split: a day the roof cannot carry whole is
+     bought whole, and none of it is the sun's. strong_hours is only recorded
+     with blackout mode on. */
+  const allOrNothing = s.strong_hours != null;
+  const sun = allOrNothing && share > 0 ? 0 : s.free_kwh;
   const weather = ahead ? [
     "peak " + n1(ahead.peak_kw, " kW"), "cloud " + n0(ahead.cloud_cover, "%"),
     "rain " + n1(ahead.rain_mm, " mm"),
@@ -746,7 +753,11 @@ function renderCards(data) {
       <div class="row"><span><b class="dot" style="background:var(--solar)"></b>sun</span><span>${n1(sun, " kWh")}</span></div>
       <div class="row"><span><b class="dot" style="background:var(--on)"></b>night grid</span><span>${n1(share, " kWh")}</span></div>
       ${ahead ? `<div class="row"><span>roof forecast</span><span>${n1(ahead.pv_kwh, " kWh")}</span></div>` : ""}
+      ${allOrNothing ? `<div class="row"><span>hours ≥ ${n1(set.device_power_kw, " kW")}</span><span>${
+        n0(s.strong_hours, " h")}</span></div>` : ""}
     </div>
+    ${allOrNothing ? `<div class="note tight">blackout · all or nothing: the roof only if it carries the
+      whole ${n1(target, " kWh")}, and only in hours ≥ ${n1(set.device_power_kw, " kW")}</div>` : ""}
   `, weather));
 
   $("cards").innerHTML = cards.join("");
@@ -1055,6 +1066,8 @@ function hover(event) {
     <div class="row"><span>drawing</span><span>${kw(best.plug_power_w)}</span></div>
     <div class="row"><span>sun forecast</span><span>${n1(best.pv_forecast_kwh, " kWh")}</span></div>
     ${best.target_kwh != null ? `<div class="row"><span>night grid</span><span>${n1(best.target_kwh, " kWh")}</span></div>` : ""}
+    ${best.hour_kw != null ? `<div class="row"><span>hour forecast</span><span>${n1(best.hour_kw, " kW")}</span></div>` : ""}
+    ${best.strong_hours != null ? `<div class="row"><span>strong hours</span><span>${n0(best.strong_hours, " h")}</span></div>` : ""}
     ${best.delivered_kwh != null ? `<div class="row"><span>delivered</span><span>${n1(best.delivered_kwh, " kWh")}</span></div>` : ""}
     <div class="row"><span>window</span><span>${esc({ night: "cheap grid", solar: "free solar" }[best.phase] || "—")}</span></div>
     ${best.grid_up != null ? `<div class="row"><span>grid</span>${best.grid_up

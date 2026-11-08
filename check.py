@@ -217,12 +217,19 @@ async def check_decision(forecast_result, delivered=None):
               " top up the rest from %s" % (
                   watcher.DEVICE_DAILY_KWH, target,
                   watcher.SOLAR_START.strftime("%H:%M")))
+        if watcher.BLACKOUT_MODE:
+            print("  blackout   : all or nothing - %d h forecast at %.1f kW or more,"
+                  " the roof %s the whole %.1f kWh" % (
+                      watcher.strong_hours(outlook), watcher.DEVICE_POWER_KW,
+                      "carries" if watcher.solar_covers(outlook) else "cannot carry",
+                      watcher.DEVICE_DAILY_KWH))
 
+    hour = solar_forecast.hour_at(outlook, now) if outlook else None
     if night:
         wanted, reason = watcher.decide_night(outlook, wet, delivered, grid_up=grid_up,
                                               grid_said=grid_said)
     elif solar:
-        wanted, reason = watcher.decide_solar(delivered)
+        wanted, reason = watcher.decide_solar(delivered, hour_kw=hour["kw"] if hour else None)
     else:
         wanted, reason = watcher.decide_night(outlook, wet, delivered, grid_up=grid_up,
                                               grid_said=grid_said)

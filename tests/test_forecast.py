@@ -91,6 +91,28 @@ class WhichDayIsBeingJudged(unittest.TestCase):
                          DAY + timedelta(days=1))
 
 
+class TheHourNow(unittest.TestCase):
+    """hour_at: the row whose hour `now` falls in - by the hour it covers, not its stamp."""
+
+    OUTLOOK = {"hours": [{"time": datetime.combine(DAY, at(hour)), "kw": float(hour)}
+                         for hour in (11, 12, 13)]}
+
+    def kw(self, hour, minute=0):
+        row = solar_forecast.hour_at(self.OUTLOOK, datetime.combine(DAY, at(hour, minute)))
+        return None if row is None else row["kw"]
+
+    def test_half_past_twelve_is_the_13_00_row(self):
+        self.assertEqual(self.kw(12, 30), 13.0)
+
+    def test_the_top_of_the_hour_starts_the_next_row(self):
+        self.assertEqual(self.kw(12), 13.0)
+        self.assertEqual(self.kw(11, 59), 12.0)
+
+    def test_outside_the_rows_there_is_no_hour(self):
+        self.assertIsNone(self.kw(13))
+        self.assertIsNone(self.kw(9, 59))
+
+
 class PanelBearing(unittest.TestCase):
     """Compass degrees in, Open-Meteo's south-relative angle out."""
 

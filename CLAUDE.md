@@ -52,7 +52,12 @@ fails if the inverter reaches anything but `grid_up`.
 **The forecast reaches the decision as one number a day** - the total the roof
 should make - and it only ever sizes the night's grid buy. The day window is
 the meter alone. `tests/test_contract.py::TheDecisionUsesTheDayTotal` fails if
-per-hour gating creeps back.
+per-hour gating creeps back. **Blackout mode is the one exception**, on
+purpose: there the ration is all or nothing (the night buys the whole
+`DEVICE_DAILY_KWH` unless the roof can carry every kWh of it), and the day
+window runs only in hours forecast at `DEVICE_POWER_KW` or more, because a
+weak hour there is drawn from the battery. Outside blackout mode `hour_kw`
+reaches `decide_solar` and changes nothing.
 
 `DOCKER.md` is the deployment and behaviour document - the arithmetic of both
 windows is explained there, and it is the file to update when the rules change.
@@ -180,12 +185,17 @@ then crops the image, so `--window-size=400,...` shows a false clip - ask for
   and the night had already decided not to buy. The day total can still be
   wrong - a day under forecast tops up at the day tariff - but it fails
   towards a bigger bill rather than a cold load. Keep it that way.
-- **The forecast is still no part of the day window.** `decide_solar` runs from
-  `SOLAR_START` until the meter or the clock says the ration is spent, and an
-  unreadable meter still means off while a kWh budget is set. It used to need
-  the forecast's permission to run at all; that second opinion is gone and is
-  not to come back - `tests/test_contract.py::TheDecisionUsesTheDayTotal`
-  pins the arguments `decide_solar` may take.
+- **The forecast is still no part of the day window - outside blackout mode.**
+  `decide_solar` runs from `SOLAR_START` until the meter or the clock says the
+  ration is spent, and an unreadable meter still means off while a kWh budget
+  is set. It used to need the forecast's permission to run at all; that
+  second opinion is gone and is not to come back -
+  `tests/test_contract.py::TheDecisionUsesTheDayTotal` pins the arguments
+  `decide_solar` may take, and that `hour_kw` is only read under
+  `BLACKOUT_MODE`. In blackout mode the hour gate is deliberate, and
+  `solar_covers` judges the night by the same strong hours the day will run
+  in, so a day the gate never opens is a day the night buys in full rather
+  than a cold load. Keep those two together.
 
 ## Things that have bitten
 

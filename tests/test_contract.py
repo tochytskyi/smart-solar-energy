@@ -267,11 +267,29 @@ class TheDecisionUsesTheDayTotal(unittest.TestCase):
         # budget and a meter-only brake never releases. What this still
         # forbids is the forecast - an outlook, a curve or a wet fraction
         # reaching this window is the failure it was written for.
+        #
+        # Widened a second time, deliberately, for blackout mode alone: there
+        # an hour forecast under DEVICE_POWER_KW is an hour drawn from the
+        # battery, so this hour's kW reaches the window - and nothing reads it
+        # unless BLACKOUT_MODE is on. The verdict itself still takes the two.
         decide = next(node for node in ast.walk(MAIN)
                       if isinstance(node, ast.FunctionDef) and node.name == "decide_solar")
-        self.assertEqual([arg.arg for arg in decide.args.args], ["delivered", "ran_hours"],
+        self.assertEqual([arg.arg for arg in decide.args.args],
+                         ["delivered", "ran_hours", "hour_kw"],
                          "decide_solar has grown an argument; the day window is"
-                         " the meter and the clock, and nothing else")
+                         " the meter and the clock, and blackout mode's hour gate")
+        verdict = next(node for node in ast.walk(MAIN)
+                       if isinstance(node, ast.FunctionDef) and node.name == "solar_verdict")
+        self.assertEqual([arg.arg for arg in verdict.args.args], ["delivered", "ran_hours"])
+
+    def test_the_hour_gate_is_blackout_mode_s_alone(self):
+        source = ast.get_source_segment(
+            (ROOT / "main.py").read_text(),
+            next(node for node in ast.walk(MAIN)
+                 if isinstance(node, ast.FunctionDef) and node.name == "decide_solar"))
+        gates = [line for line in source.splitlines() if "hour_kw <" in line]
+        self.assertEqual(len(gates), 1)
+        self.assertIn("BLACKOUT_MODE", gates[0])
 
     def test_no_surplus_thresholds_are_left_anywhere(self):
         for name in TheInverterOnlySaysWhetherTheGridIsThere.SOURCES + (

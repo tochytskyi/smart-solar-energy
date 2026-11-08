@@ -12,6 +12,7 @@ import stat
 import tempfile
 import unittest
 import urllib.error
+from unittest import mock
 import urllib.request
 from pathlib import Path
 
@@ -246,6 +247,13 @@ class TheRestart(unittest.TestCase):
         cloud, forecast = main.preflight()
         self.assertIsNone(cloud)
         self.assertIsNotNone(forecast)
+
+    def test_blackout_mode_needs_the_load_s_power_to_gate_the_day(self):
+        with mock.patch.multiple(main, BLACKOUT_MODE=True, BLACKOUT_SENTINEL_IP="10.0.0.9",
+                                 DEVICE_POWER_KW=0.0):
+            with self.assertRaises(SystemExit) as caught:
+                main.preflight()
+        self.assertIn("DEVICE_POWER_KW", str(caught.exception))
 
     def test_the_check_runs_the_watcher_s_own_preflight(self):
         self.assertIn("main.preflight()", overrides.PREFLIGHT)

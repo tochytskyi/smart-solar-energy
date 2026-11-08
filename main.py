@@ -25,13 +25,16 @@ the socket closed for the whole window waiting for energy it will never take.
 
 Outside both windows the socket stays off.
 
-BLACKOUT_MODE adds one more condition to the night, and only to the night:
-during scheduled outages the house runs on its battery, and "cheap grid" at
-00:00 would really be the battery being drained into the load. So the night
-buys only while the grid is there: by the inverter's own grid voltage, read
-off the Deye Cloud, or - when the cloud cannot say, or says it too late - by
-whether BLACKOUT_SENTINEL_IP, a device on a circuit the battery does not back
-up, answers on the LAN. The day window is left alone.
+BLACKOUT_MODE changes both windows, because during scheduled outages the
+house runs on its battery and anything the roof or the grid does not carry
+comes out of it. The night buys only while the grid is there: by the
+inverter's own grid voltage, read off the Deye Cloud, or - when the cloud
+cannot say, or says it too late - by whether BLACKOUT_SENTINEL_IP, a device on
+a circuit the battery does not back up, answers on the LAN. And the ration is
+no longer split: the roof gets the day only when it can carry the whole
+DEVICE_DAILY_KWH, otherwise the night buys all of it. The day window then runs
+only in hours forecast to make DEVICE_POWER_KW or more - an hour under that is
+an hour the load would be drawing the difference from the battery.
 
 All of that can be suspended from the page. Paused, the watcher still reads
 the meter, still fetches the sky and still records every pass - it simply
@@ -39,10 +42,12 @@ stops commanding the relay, so the socket keeps whatever state it had, and it
 asks the plug what that state is rather than assuming. The switch lives in the
 logbook, so it survives a restart.
 
-The forecast is one number a day - the total the roof should make - and it
-only ever sizes the night's buy. Nothing here tries to work out which hours
-will be sunny: a day that comes in under forecast costs some energy at the
-day tariff, not a load left cold.
+Outside blackout mode the forecast is one number a day - the total the roof
+should make - and it only ever sizes the night's buy. Nothing there tries to
+work out which hours will be sunny: a day that comes in under forecast costs
+some energy at the day tariff, not a load left cold. Blackout mode is the one
+place the hours count, and it judges the night by the same hours the day will
+run in, so a day the gate will not open is a day the night buys in full.
 
 Every pass is written to a SQLite logbook (history.py) and served as a live
 page on DASHBOARD_PORT (dashboard.py), so what the program did last night can
@@ -389,13 +394,41 @@ def free_solar_kwh(outlook):
     return min(DEVICE_DAILY_KWH, max(0.0, outlook["pv_kwh"] - HOUSE_DAYTIME_KWH))
 
 
+def strong_hours(outlook):
+    """Hours of the solar window forecast to make DEVICE_POWER_KW or more.
+
+    Blackout mode only. Those are the hours the day window may run in, because
+    in any other hour the load draws the difference from the battery.
+    """
+    return sum(1 for row in outlook["hours"] if row["kw"] >= DEVICE_POWER_KW)
+
+
+def solar_covers(outlook):
+    """Blackout mode: whether the roof alone can carry the whole daily ration.
+
+    Both ways of counting have to agree. The day total less the house is the
+    usual one. The strong hours are the other: the day window only runs in
+    them, so a big total spread thin under cloud is no use to it. Judging the
+    night on the total alone would skip the buy for a day the gate never
+    opens, which is the load left cold all over again.
+    """
+    return free_solar_kwh(outlook) >= DEVICE_DAILY_KWH \
+        and strong_hours(outlook) * DEVICE_POWER_KW >= DEVICE_DAILY_KWH
+
+
 def night_target_kwh(outlook):
     """How much cheap grid to buy tonight, in kWh.
 
     Only the shortfall: if the sun will hand over 4 of the 6 kWh for free,
     the grid is asked for 2, not 6. Zero means the day covers it outright and
     the socket should stay off all night.
+
+    In blackout mode it is all or nothing. A shortfall left to the day would
+    be met by the battery in any hour the roof falls short, so the night buys
+    the whole ration unless the roof can carry every kWh of it.
     """
+    if BLACKOUT_MODE:
+        return 0.0 if solar_covers(outlook) else DEVICE_DAILY_KWH
     return min(DEVICE_DAILY_KWH, max(0.0, DEVICE_DAILY_KWH - free_solar_kwh(outlook)))
 
 
@@ -468,16 +501,38 @@ def night_verdict(outlook, wet_fraction, delivered, ran_hours=0.0):
     target = night_target_kwh(outlook)
     context = "%.1f kWh sun, house takes %.1f - %.1f kWh reaches the load free" % (
         outlook["pv_kwh"], HOUSE_DAYTIME_KWH, free)
+    if BLACKOUT_MODE:
+        context += ", %d h at %.1f kW or more" % (strong_hours(outlook), DEVICE_POWER_KW)
 
     if target <= 0:
         return False, context + " - covers %.1f kWh, waiting for sun" % DEVICE_DAILY_KWH
     if delivered >= target:
         return False, context + " - grid share of %.1f kWh delivered" % target
+    if BLACKOUT_MODE:
+        return True, context + " - short of the whole %.1f kWh - buying %.1f kWh from" \
+            " the grid, none of it left to the roof" % (DEVICE_DAILY_KWH, target)
     return True, context + " - buying %.1f kWh of it from the grid" % target
 
 
-def decide_solar(delivered, ran_hours=0.0):
+def decide_solar(delivered, ran_hours=0.0, hour_kw=None):
     """(socket on?, why) inside the solar window.
+
+    In blackout mode a window that wants to run also needs this hour's
+    forecast to reach DEVICE_POWER_KW. `hour_kw` is that forecast, or None
+    when there is no row for now - which holds off too: the battery is what
+    pays for a guess.
+    """
+    on, why = solar_verdict(delivered, ran_hours)
+    if on and BLACKOUT_MODE and (hour_kw is None or hour_kw < DEVICE_POWER_KW):
+        weak = "no forecast for this hour" if hour_kw is None else \
+            "this hour is forecast at %.1f kW, under the load's %.1f" % (hour_kw, DEVICE_POWER_KW)
+        return False, why.replace(" - topping up", " - would top up", 1) + \
+            " - but %s: holding off rather than running on the battery" % weak
+    return on, why
+
+
+def solar_verdict(delivered, ran_hours=0.0):
+    """(socket on?, why) inside the solar window, as if every hour were strong.
 
     No forecast and no threshold: from SOLAR_START the socket simply runs
     until the load has had its day, by the meter or by the clock. Whatever the
@@ -779,6 +834,11 @@ def preflight():
         # read as an outage and the load would never get its cheap grid.
         raise SystemExit("BLACKOUT_MODE is on but neither BLACKOUT_SENTINEL_IP nor"
                          " DEYE_APP_ID is set.")
+    if BLACKOUT_MODE and DEVICE_POWER_KW <= 0:
+        # Blackout mode gates the day on it: at 0 every hour is strong enough
+        # and no hour ever counts towards covering the day.
+        raise SystemExit("BLACKOUT_MODE is on but DEVICE_POWER_KW is %r - it must be"
+                         " the load's draw in kW." % DEVICE_POWER_KW)
     # Read, not used: client() needs both, and finding out after the restart
     # is too late to say so on the page.
     config("TAPO_EMAIL")
@@ -872,6 +932,10 @@ async def main():
                 DEYE_GRID_SETTLE // 60, DEYE_MAX_AGE // 60, ", or when it cannot say, while " + sentinel
                 if BLACKOUT_SENTINEL_IP else "")
             if cloud else sentinel), "warn", "decision")
+        log("BLACKOUT MODE: the night buys the whole %.1f kWh unless the roof can carry all"
+            " of it, and %s-%s runs only in hours forecast at %.1f kW or more" % (
+                DEVICE_DAILY_KWH, SOLAR_START.strftime("%H:%M"), SOLAR_END.strftime("%H:%M"),
+                DEVICE_POWER_KW), "warn", "decision")
     elif DEYE_APP_ID:
         log("DEYE_APP_ID is set but BLACKOUT_MODE is off - the inverter is not asked")
 
@@ -928,12 +992,17 @@ async def main():
         # does not hand the load a fresh allowance.
         ran_hours = LOGBOOK.on_hours_today()
 
+        # This hour's forecast, which only blackout mode's day window decides on.
+        hour = solar_forecast.hour_at(outlook, now) if outlook else None
+        hour_kw = hour["kw"] if hour else None
+
         if night:
             wanted, reason = decide_night(outlook, wet, delivered, ran_hours,
                                           seen.get("grid_up"), grid_said)
         elif solar:
-            # The day window needs no forecast at all - only the meter and the clock.
-            wanted, reason = decide_solar(delivered, ran_hours)
+            # Outside blackout mode the day window needs no forecast at all -
+            # only the meter and the clock.
+            wanted, reason = decide_solar(delivered, ran_hours, hour_kw)
         else:
             wanted, reason = False, "outside both windows"
 
@@ -979,6 +1048,9 @@ async def main():
             ran_hours=ran_hours,
             free_kwh=free_kwh,
             target_kwh=target_kwh,
+            hour_kw=hour_kw,
+            # Blank outside blackout mode, where no hour gates anything.
+            strong_hours=strong_hours(outlook) if outlook and BLACKOUT_MODE else None,
             grid_up=seen.get("grid_up"),
             grid_source=seen.get("grid_source"),
             grid_volts=seen.get("grid_volts"),

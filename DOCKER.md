@@ -311,7 +311,7 @@ day**: `DEVICE_DAILY_KWH` off the meter, or `DEVICE_DAILY_HOURS` on the clock.
 | Window | Source | Runs when |
 |---|---|---|
 | `NIGHT_START`-`NIGHT_END` (00:00-07:00) | cheap grid | today's sun will not cover the load - and, with `BLACKOUT_MODE=1`, the grid is actually there |
-| `SOLAR_START`-`SOLAR_END` (10:00-18:00) | roof first, grid for the rest | the budget is not full yet |
+| `SOLAR_START`-`SOLAR_END` (10:00-18:00) | roof first, grid for the rest | the budget is not full yet - and, with `BLACKOUT_MODE=1`, this hour is forecast at `DEVICE_POWER_KW` or more |
 | anything else | - | never |
 | any of them, paused from the page | - | never - the relay is not touched at all |
 
@@ -388,8 +388,11 @@ not know that - it would see a shortfall, close the socket, and the inverter
 would empty the battery into hot water at 01:00, exactly when the house needs
 it to last until the power comes back.
 
-`BLACKOUT_MODE=1` adds one condition to the night: the socket comes on only
-while the grid is there. Two things can say so, in this order:
+`BLACKOUT_MODE=1` changes three things. The night comes on only while the
+grid is there; the ration is no longer split between the roof and the night;
+and the day window runs only in strong hours. The last two are under
+[All or nothing](#all-or-nothing-the-roof-carries-the-day-or-the-night-buys-it)
+below. Two things can say whether the grid is there, in this order:
 
 1. **The inverter**, when `DEYE_APP_ID` is set, read off the Deye Cloud
    OpenAPI. What counts is the inverter's **own** decision to use the grid,
@@ -496,8 +499,9 @@ lasts about 60 days and is renewed a day early.
 - **No answer means down.** Anything but a clear "up" holds the night off.
   Wrong that way, the load tops up at the day tariff; wrong the other way, the
   battery is gone.
-- **Only the night.** The `SOLAR_START`-`SOLAR_END` top-up is unchanged - it
-  runs on the roof first, and the budget and clock brakes still bound it.
+- **The day window has its own gate**, below. The grid's answer is not part of
+  it: the top-up runs on the roof first, and the budget and clock brakes still
+  bound it.
 - **The budget does not move.** A night cut short by an outage just leaves
   more for the day to top up, through the same meter.
 
@@ -530,6 +534,46 @@ Every one of those numbers is in the CSV too: `grid_source`, `grid_volts`
 (the weakest phase), `grid_hz`, `grid_age_s`, `grid_status`, and
 `grid_stable_s` (how long the inverter had held the grid, empty when it was
 refused).
+
+#### All or nothing: the roof carries the day, or the night buys it
+
+Outside blackout mode the night buys only the shortfall and the day tops up
+the rest "from roof and grid". During outages that second half is roof and
+**battery**: any hour the roof makes less than the load draws, the inverter
+covers the difference from the battery. So blackout mode never splits the
+ration:
+
+```
+strong hours = hours of SOLAR_START-SOLAR_END forecast at DEVICE_POWER_KW or more
+roof covers  = free >= DEVICE_DAILY_KWH
+               and strong hours x DEVICE_POWER_KW >= DEVICE_DAILY_KWH
+night target = 0 if roof covers, else DEVICE_DAILY_KWH       (never a part)
+day window   = runs only while this hour's forecast >= DEVICE_POWER_KW
+               (and the budget and clock brakes still bound it)
+```
+
+The strong hours are counted in "roof covers" on purpose. The day window
+only runs in them, so a day with a big total spread thin under cloud is a
+day it would never open. Judging the night on the total alone would skip the
+buy for it and leave the load cold, which is what the hourly gate did before
+it was removed outside blackout mode.
+
+With the defaults (6 kWh, 2 kW) that means a day needs 14 kWh on the roof
+**and** at least three hours forecast at 2 kW or more before the night stays
+off. Anything less and the night buys all 6 kWh. If the grid is down all
+night, the day window runs in the strong hours only and a weak hour holds
+off: `... - would top up - but this hour is forecast at 1.4 kW, under the
+load's 2.0: holding off rather than running on the battery`. An hour with no
+forecast row holds off too.
+
+`DEVICE_POWER_KW` has to be above 0 with blackout mode on; the watcher and
+the Settings tab refuse it otherwise.
+
+On the page: the day-ahead card shows `hours ≥ 2.0 kW` and a blackout note,
+and the sun share is 0 whenever the night buys. The Today card shows `this
+hour` (amber when it is under the gate), and the hover has `hour forecast` and
+`strong hours`. Both are in the CSV as `hour_kw` and `strong_hours`;
+`strong_hours` is empty with blackout mode off.
 
 The Log says what the grid was on the first pass after every start, then one
 line per change - `grid went DOWN - the inverter rejected the grid (0 Hz,
