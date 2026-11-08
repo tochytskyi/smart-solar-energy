@@ -207,6 +207,22 @@ tfoot td { border-top: 1px solid var(--line); color: var(--ink-2); }
 .daycap .spacer { flex: 1 1 auto; }
 tbody tr:hover { background: var(--panel-2); }
 
+.tabs {
+  display: flex; gap: 2px; margin: 0 0 14px; border-bottom: 1px solid var(--line);
+  overflow-x: auto; scrollbar-width: none;
+}
+.tabs button {
+  border: 0; border-radius: 0; background: transparent; padding: 8px 14px;
+  margin-bottom: -1px; border-bottom: 2px solid transparent;
+  color: var(--ink-2); font-weight: 560; white-space: nowrap;
+}
+.tabs button:hover { color: var(--ink); }
+.tabs button.on { color: var(--ink); border-bottom-color: var(--on); }
+[data-tab][hidden] { display: none; }
+/* The first panel on a tab sits right under the tabs, not 14px below them. */
+.tabpage > .panel:first-child { margin-top: 0; }
+.tabpage > .cards + .panel { margin-top: 14px; }
+
 .scroller { overflow-x: auto; }
 .log { max-height: 460px; overflow: auto; }
 .log td.t { font-family: var(--mono); font-size: 12px; color: var(--ink-3); white-space: nowrap; width: 1%; }
@@ -255,6 +271,14 @@ footer a { color: var(--ink-2); }
 
   <div class="banner" id="banner" hidden></div>
 
+  <nav class="tabs" id="tabs" role="tablist">
+    <button data-tab="overview" role="tab">Overview</button>
+    <button data-tab="forecast" role="tab">Forecast</button>
+    <button data-tab="nights" role="tab">Nights</button>
+    <button data-tab="log" role="tab">Log</button>
+  </nav>
+
+  <div class="tabpage" data-tab="overview" role="tabpanel">
   <section class="cards" id="cards"></section>
 
   <section class="panel">
@@ -278,7 +302,9 @@ footer a { color: var(--ink-2); }
       <div class="tip" id="tip"></div>
     </div>
   </section>
+  </div>
 
+  <div class="tabpage" data-tab="forecast" role="tabpanel" hidden>
   <section class="panel">
     <div class="head">
       <h2>Forecast</h2>
@@ -287,14 +313,18 @@ footer a { color: var(--ink-2); }
     </div>
     <div id="forecast"></div>
   </section>
+  </div>
 
+  <div class="tabpage" data-tab="nights" role="tabpanel" hidden>
   <section class="panel">
     <div class="head"><h2>Nights</h2><span class="spacer"></span>
       <span class="sub" style="color:var(--ink-3);font-size:12px">how long the socket ran, on which tariff, and what it drew</span>
     </div>
     <div class="scroller" id="days"></div>
   </section>
+  </div>
 
+  <div class="tabpage" data-tab="log" role="tabpanel" hidden>
   <section class="panel">
     <div class="head">
       <h2>Log</h2>
@@ -315,6 +345,7 @@ footer a { color: var(--ink-2); }
     </div>
     <div class="log" id="log"></div>
   </section>
+  </div>
 
   <footer id="footer"></footer>
 </div>
@@ -1164,6 +1195,31 @@ function buildRanges() {
   };
 }
 
+/* The tab lives in the URL hash so a reload, a bookmark or a link to #log
+   lands where it was; with no hash, the last one used in this browser. */
+const TABS = ["overview", "forecast", "nights", "log"];
+
+function showTab(name) {
+  if (!TABS.includes(name)) name = "overview";
+  document.querySelectorAll(".tabpage").forEach((page) => { page.hidden = page.dataset.tab !== name; });
+  [...$("tabs").children].forEach((b) => {
+    b.classList.toggle("on", b.dataset.tab === name);
+    b.setAttribute("aria-selected", b.dataset.tab === name);
+  });
+  try { localStorage.setItem("tab", name); } catch (err) { /* only a convenience */ }
+}
+
+function buildTabs() {
+  $("tabs").onclick = (e) => {
+    const button = e.target.closest("button");
+    if (button) location.hash = button.dataset.tab;
+  };
+  window.addEventListener("hashchange", () => showTab(location.hash.slice(1)));
+  let saved = null;
+  try { saved = localStorage.getItem("tab"); } catch (err) { /* as above */ }
+  showTab(location.hash.slice(1) || saved);
+}
+
 async function loadState() {
   try {
     const data = await api("/api/state");
@@ -1214,6 +1270,7 @@ function boot() {
   };
 
   buildRanges();
+  buildTabs();
 
   $("control").onclick = (e) => {
     const button = e.target.closest("button");
@@ -1246,10 +1303,11 @@ function boot() {
 
   const measure = () => {
     const width = $("chartbox").clientWidth - 12;
+    if (width <= 0) return;  // its tab is hidden; the observer fires again when shown
     if (Math.abs(width - state.chartWidth) > 4) { state.chartWidth = width; renderChart(); }
   };
   new ResizeObserver(measure).observe($("chartbox"));
-  state.chartWidth = $("chartbox").clientWidth - 12;
+  state.chartWidth = Math.max(320, $("chartbox").clientWidth - 12);
 
   const refresh = () => {
     if (document.hidden) return;
