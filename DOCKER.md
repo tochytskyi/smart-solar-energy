@@ -95,8 +95,8 @@ Pi's own address. It shows:
 - **the log** - the same lines `docker compose logs` shows, kept for
   `HISTORY_RETENTION_DAYS`, filterable by level and text;
 - **the pause switch** - top right, `switching` / `paused`. See below;
-- **the inverter switch** - next to it, `inverter` / `sentinel only`, when
-  blackout mode has an inverter to ask. See below.
+- **the grid switch** - next to it, `both` / `inverter only` /
+  `sentinel only`, when blackout mode has an inverter to ask. See below.
 
 It refreshes itself once a minute - the same cadence as `CHECK_INTERVAL`, so
 the page is never more than one decision behind - and reads well on a phone. A
@@ -152,39 +152,49 @@ curl -s http://<pi-address>:8080/api/state | grep -o '"enabled":[a-z]*'
 `python check.py` reports the pause too, above the verdict it would otherwise
 be acting on.
 
-### Leaving the inverter out from the page
+### Leaving the inverter or the sentinel out from the page
 
 When blackout mode has an inverter to ask (`DEYE_APP_ID` set), a second switch
-sits next to the pause: `inverter` / `sentinel only` (`inverter off` when
-there is no sentinel either).
+sits next to the pause, choosing who judges the grid:
 
 | | how the night judges the grid |
 |---|---|
-| `inverter` | the normal thing - the inverter's own verdict, read off the Deye Cloud, with the sentinel as the fallback |
+| `both` | the normal thing - the inverter's own verdict, read off the Deye Cloud, with the sentinel as the fallback |
+| `inverter only` | the sentinel is **not knocked on at all**; when the cloud cannot say, nothing does, and the night does not buy |
 | `sentinel only` | the Deye Cloud is **not called at all**; `BLACKOUT_SENTINEL_IP` alone says whether the grid is there |
 
-It is there for a cloud that is down, slow or answering nonsense, without
-editing `.env` and restarting. Like the pause it lives in the logbook and
-survives a restart, and a watcher that starts with it off says so in the log.
+With no sentinel configured it is two-way, `inverter` / `inverter off`, and
+off means nothing can say the grid is there, so the night does not buy at all.
 
-What it gives up: the sentinel only sees a dead grid, not a weak one the
-inverter would refuse, so a sagging evening reads as "grid up". And with no
-sentinel configured, off means nothing can say the grid is there, so the night
-does not buy at all. It can only make the night more cautious or less
-precise - never make it buy when it otherwise would not have.
+`sentinel only` is for a cloud that is down, slow or answering nonsense;
+`inverter only` for a sentinel that is unplugged, moved, or turned out to be on
+a backed-up circuit - both without editing `.env` and restarting. They are two
+switches in the logbook, `inverter` and `sentinel`, and like the pause they
+survive a restart; a watcher that starts with either off says so in the log.
+The page never turns both off, and `POST /api/control` refuses it with a 409.
+
+What each gives up: the sentinel only sees a dead grid, not a weak one the
+inverter would refuse, so with `sentinel only` a sagging evening reads as
+"grid up". With `inverter only`, an outage that takes the router with it
+leaves the cloud stale and the night not buying - the cautious side. Neither
+can ever make the night buy when it otherwise would not have.
 
 Switched back on, the inverter is not trusted on the spot: it has to be seen
 holding the grid for the whole `DEYE_GRID_SETTLE` again, since nobody watched
-it while it was off.
+it while it was off. The sentinel is asked again on the next pass, and a
+contradiction with the inverter that was there before it was left out is
+warned about again.
 
-On the page the switch shows `sentinel only` in amber while it is off, the
-Socket card says `sentinel ... online (inverter off)`, the hover has an
-`inverter · off from the page` row, and the CSV has `inverter_enabled`. The
-Log gets one line per flip.
+On the page the switch shows `inverter only` or `sentinel only` in amber, the
+Socket card says `sentinel ... online (inverter off)` or `inverter silent and
+the sentinel switched off`, and until the next pass picks a click up, `...
+switched off · applies from the next check`. The hover has an `inverter · off
+from the page` or `sentinel · off from the page` row, and the CSV has
+`inverter_enabled` and `sentinel_enabled`. The Log gets one line per flip.
 
 ```bash
 curl -s -X POST -H "Content-Type: application/json" \
-  -d '{"inverter": false}' http://<pi-address>:8080/api/control
+  -d '{"sentinel": false}' http://<pi-address>:8080/api/control
 ```
 
 ### Keep it on the LAN
@@ -339,7 +349,9 @@ while the grid is there. Two things can say so, in this order:
 night buys  = (the sum above says buy)  and  the grid is there
 grid        = the inverter has held the grid for DEYE_GRID_SETTLE,
                 if its reading is no older than DEYE_MAX_AGE
+                (and the page has not left the inverter out)
               else BLACKOUT_SENTINEL_IP answers
+                (unless the page has left the sentinel out)
               else unknown - which holds off like down
 ```
 
@@ -418,7 +430,8 @@ lasts about 60 days and is renewed a day early.
   `CHECK_INTERVAL`. A *refused* connection counts as up: the reset came from
   the device itself. Some devices drop rather than refuse, so a port it really
   listens on is the safe choice.
-- **The sentinel is asked even while the inverter decides**, so the two can be
+- **The sentinel is asked even while the inverter decides** - unless the page
+  has left it out - so the two can be
   compared. When they contradict each other about whether there is any mains
   at all, the Log gets one `warn` line saying so, and the inverter is
   believed. A sentinel that has been unplugged reads exactly like an outage;

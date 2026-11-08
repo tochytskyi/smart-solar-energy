@@ -152,11 +152,11 @@ input[type=search] { cursor: text; min-width: 0; }
 .seg button + button { border-left: 1px solid var(--line); }
 .seg button.on { background: var(--ink); color: var(--panel); }
 
-/* The page's two switches say which state they are in rather than what
-   clicking would do. Paused, and the inverter left out, are amber, not
-   neutral - neither is a normal resting state. */
+/* The page's switches say which state they are in rather than what clicking
+   would do. Paused, and either grid witness left out, are amber, not
+   neutral - none of them is a normal resting state. */
 #control button[data-enabled="0"].on { background: var(--warn); color: var(--panel); }
-#gridcontrol button[data-inverter="0"].on { background: var(--warn); color: var(--panel); }
+#gridcontrol button:not([data-grid="both"]).on { background: var(--warn); color: var(--panel); }
 #gridcontrol[hidden] { display: none; }
 .banner {
   display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline;
@@ -243,9 +243,10 @@ footer a { color: var(--ink-2); }
       <button data-enabled="0">paused</button>
     </div>
     <div class="seg" id="gridcontrol" hidden
-         title="Whether blackout mode asks the inverter if the grid is there">
-      <button data-inverter="1">inverter</button>
-      <button data-inverter="0">sentinel only</button>
+         title="Whom blackout mode asks whether the grid is there">
+      <button data-grid="both">both</button>
+      <button data-grid="inverter">inverter only</button>
+      <button data-grid="sentinel">sentinel only</button>
     </div>
     <span class="pill blackout" id="blackout" hidden><i class="dot"></i><span id="blackouttext"></span></span>
     <span class="pill live" id="livepill"><i class="dot"></i><span id="livetext">connecting</span></span>
@@ -358,7 +359,8 @@ async function api(path) {
 
 /* The only request on this page that is not a GET. It changes one boolean in
    the watcher's logbook - whether it may switch the socket, or whether it may
-   ask the inverter about the grid - and nothing else here writes anything. */
+   ask the inverter or the sentinel about the grid - and nothing else here
+   writes anything. */
 async function post(path, body) {
   const res = await fetch(path, {
     method: "POST", cache: "no-store",
@@ -404,6 +406,8 @@ function gridSaid(r, set) {
   else if (r.grid_source === "sentinel") who = "sentinel " + sentinel
     + (down ? " offline" : " online") + (r.inverter_enabled === 0 || r.inverter_enabled === false
       ? " (inverter off)" : set.blackout_inverter ? " (inverter silent)" : "");
+  else if (r.grid_up == null && (r.sentinel_enabled === 0 || r.sentinel_enabled === false))
+    who = "inverter silent and the sentinel switched off";
   else who = "sentinel " + (down ? "offline" : "online");     /* rows from before the inverter */
   return { down, unknown: r.grid_up == null, who };
 }
@@ -476,34 +480,73 @@ async function setEnabled(enabled) {
   }
 }
 
-/* ---------- the inverter switch ---------- */
+/* ---------- the grid switch ---------- */
 
-/* Off, blackout mode stops calling the inverter's cloud and the sentinel
-   alone says whether the grid is there. Only drawn where there is an inverter
-   to ask; with no sentinel either, off means the night will not buy at all. */
-function renderGridControl(on, set) {
-  state.inverter = on;
-  const box = $("gridcontrol");
-  box.hidden = !set.blackout_inverter;
-  box.lastElementChild.textContent = set.blackout_sentinel ? "sentinel only" : "inverter off";
-  box.title = on ? "Blackout mode asks the inverter whether the grid is there"
-    : set.blackout_sentinel ? "The inverter is not asked: " + set.blackout_sentinel
-      + " alone decides whether the grid is there"
-    : "The inverter is not asked and there is no sentinel: the night will not buy";
-  [...box.children].forEach((button) =>
-    button.classList.toggle("on", (button.dataset.inverter === "1") === on));
+/* Whom blackout mode asks whether the grid is there: the inverter's cloud,
+   the sentinel, or both - the inverter first and the sentinel when it cannot
+   say. Leaving one out is not called at all, and it only ever narrows what the
+   night believes. Two booleans in the logbook, drawn as one three-way switch
+   so that "neither" is never on offer. Only drawn where there is an inverter
+   to ask; with no sentinel it is two-way, and "inverter off" means the night
+   will not buy at all. */
+const GRID_MODES = { both: [true, true], inverter: [true, false], sentinel: [false, true] };
+
+function gridMode(inverter, sentinel) {
+  return inverter && sentinel ? "both" : inverter ? "inverter" : "sentinel";
 }
 
-async function setInverter(on) {
+function renderGridControl(inverter, sentinel, set) {
+  state.inverter = inverter;
+  state.sentinel = sentinel;
+  const box = $("gridcontrol");
+  box.hidden = !set.blackout_inverter;
+  const [both, inverterOnly, sentinelOnly] = box.children;
+  /* With no sentinel configured its switch changes nothing, so the choice is
+     only whether the inverter is asked. */
+  both.hidden = inverterOnly.hidden = false;
+  if (!set.blackout_sentinel) {
+    inverterOnly.hidden = true;
+    both.textContent = "inverter";
+    sentinelOnly.textContent = "inverter off";
+  } else {
+    both.textContent = "both";
+    sentinelOnly.textContent = "sentinel only";
+  }
+  const mode = set.blackout_sentinel ? gridMode(inverter, sentinel) : inverter ? "both" : "sentinel";
+  box.title = {
+    both: set.blackout_sentinel
+      ? "The inverter decides whether the grid is there, " + set.blackout_sentinel + " when it cannot say"
+      : "Blackout mode asks the inverter whether the grid is there",
+    inverter: "Only the inverter is asked: when its cloud cannot say, the night will not buy",
+    sentinel: set.blackout_sentinel ? "The inverter is not asked: " + set.blackout_sentinel
+      + " alone decides whether the grid is there"
+      : "The inverter is not asked and there is no sentinel: the night will not buy",
+  }[mode];
+  [...box.children].forEach((button) => button.classList.toggle("on", button.dataset.grid === mode));
+}
+
+async function setGrid(mode) {
+  const [inverter, sentinel] = GRID_MODES[mode];
+  /* One switch per request, the one being turned on first, so the logbook
+     never passes through neither on the way between the two "only"s - the
+     watcher refuses that, and might read it in between. */
+  const steps = [["inverter", inverter], ["sentinel", sentinel]]
+    .filter(([name, on]) => state[name] !== on)
+    .sort((a, b) => b[1] - a[1]);
   try {
-    const data = await post("/api/control", { inverter: on });
-    renderGridControl(data.inverter !== false, state.settings || {});
-    if (data.stored === false)
-      renderControl(state.enabled, "The watcher could not write that to its logbook, so the switch has not moved.");
-    loadState();
+    for (const [name, on] of steps) {
+      const data = await post("/api/control", { [name]: on });
+      state[name] = data[name] !== false;
+      if (data.stored === false) {
+        renderControl(state.enabled, "The watcher could not write that to its logbook, so the switch has not moved.");
+        break;
+      }
+    }
   } catch (err) {
     renderControl(state.enabled, "The watcher did not answer, so the switch has not moved.");
   }
+  renderGridControl(state.inverter, state.sentinel, state.settings || {});
+  loadState();
 }
 
 /* ---------- status cards ---------- */
@@ -535,9 +578,12 @@ function renderCards(data) {
        to say whether the grid is there and whose word that is, on one line. */
     $("blackouttext").textContent = "blackout · grid " + (g.unknown ? "unknown"
       : (settling ? "settling" : g.down ? "DOWN" : "up") + " · " + (s.grid_source || "sentinel"));
-    const asks = [set.blackout_inverter ? "the inverter's own grid reading" : null,
-      set.blackout_sentinel ? (set.blackout_inverter ? "or, when it cannot say, "
-        : "") + set.blackout_sentinel + " answering" : null].filter(Boolean).join(", ");
+    /* As the switches stand now, not as configured: either may be left out. */
+    const inverter = set.blackout_inverter && data.inverter !== false;
+    const sentinel = set.blackout_sentinel && data.sentinel !== false;
+    const asks = [inverter ? "the inverter's own grid reading" : null,
+      sentinel ? (inverter ? "or, when it cannot say, " : "") + set.blackout_sentinel
+        + " answering" : null].filter(Boolean).join(", ") || "nothing - neither is asked";
     badge.title = "Blackout mode: " + (g.unknown ? "nothing has said whether the grid is there"
       : g.who + (g.down ? ", so the grid is down and the night will not buy" : ", so the grid is up"))
       + ". Night grid buys only on " + asks + ". Set by BLACKOUT_MODE in .env.";
@@ -569,10 +615,10 @@ function renderCards(data) {
       wanted ${s.wanted ? "ON" : "OFF"} · the plug did not follow</div>` : ""}
     ${/* The switch is read on the next pass, not at the click: until then the
          card above still describes a pass made the other way, so say so. */
-      set.blackout_inverter && s.inverter_enabled != null
-        && (data.inverter === false) !== (s.inverter_enabled === 0 || s.inverter_enabled === false)
-      ? `<div class="note tight" style="color:var(--warn)">inverter switched ${
-          data.inverter === false ? "off" : "on"} · applies from the next check</div>` : ""}
+      ["inverter", "sentinel"].filter((name) => s[name + "_enabled"] != null
+        && (data[name] === false) !== (s[name + "_enabled"] === 0 || s[name + "_enabled"] === false))
+        .map((name) => `<div class="note tight" style="color:var(--warn)">${name} switched ${
+          data[name] === false ? "off" : "on"} · applies from the next check</div>`).join("")}
     ${s.grid_up == null ? "" : s.grid_up
       ? `<div class="note tight">grid up · ${esc(gridSaid(s, set).who)}</div>`
       : `<div class="note tight" style="color:var(--error)">grid DOWN · ${
@@ -935,6 +981,8 @@ function hover(event) {
       <span style="color:var(--warn)">off from the page</span></div>`
       : inverterSaid(best, set) ? `<div class="row"><span>inverter</span><span>${
       esc(inverterSaid(best, set))}</span></div>` : ""}
+    ${best.sentinel_enabled === 0 ? `<div class="row"><span>sentinel</span>
+      <span style="color:var(--warn)">off from the page</span></div>` : ""}
     ${best.enabled === 0 ? `<div class="row"><span>watcher</span>
       <span style="color:var(--warn)">paused</span></div>` : ""}
     ${best.reason ? `<div class="reason">${esc(best.reason)}</div>` : ""}`;
@@ -1121,7 +1169,7 @@ async function loadState() {
     const data = await api("/api/state");
     state.settings = data.settings || {};
     renderControl(data.enabled !== false);
-    renderGridControl(data.inverter !== false, state.settings);
+    renderGridControl(data.inverter !== false, data.sentinel !== false, state.settings);
     renderCards(data);
     renderForecast(data);
   } catch (err) {
@@ -1174,7 +1222,7 @@ function boot() {
 
   $("gridcontrol").onclick = (e) => {
     const button = e.target.closest("button");
-    if (button) setInverter(button.dataset.inverter === "1");
+    if (button) setGrid(button.dataset.grid);
   };
 
   $("levels").onclick = (e) => {

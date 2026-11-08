@@ -286,8 +286,9 @@ class ThePageChangesOnlyItsDeclaredSwitches(unittest.TestCase):
     It was purely a reader until the pause switch arrived, and the reason it
     could be left unauthenticated on the LAN was that there was nothing to
     write. Widened once, deliberately, for a second switch - whether blackout
-    mode may ask the inverter - so what it may touch is checked by machine:
-    one route, a fixed list of switches, and no way to reach the relay.
+    mode may ask the inverter - and again for a third, whether it may ask the
+    sentinel, so what it may touch is checked by machine: one route, a fixed
+    list of switches, and no way to reach the relay.
     """
 
     DASHBOARD = ast.parse((ROOT / "dashboard.py").read_text())
@@ -307,9 +308,10 @@ class ThePageChangesOnlyItsDeclaredSwitches(unittest.TestCase):
         self.assertEqual(routes, {"/api/control"})
 
     def test_the_switches_are_exactly_these(self):
-        # A third one is a decision, not a side effect: it lands here first.
-        self.assertEqual(history.CONTROLS, (history.CONTROL_ENABLED, history.CONTROL_INVERTER))
-        self.assertEqual(history.CONTROLS, ("enabled", "inverter"))
+        # A fourth one is a decision, not a side effect: it lands here first.
+        self.assertEqual(history.CONTROLS, (history.CONTROL_ENABLED, history.CONTROL_INVERTER,
+                                            history.CONTROL_SENTINEL))
+        self.assertEqual(history.CONTROLS, ("enabled", "inverter", "sentinel"))
 
     def test_it_writes_nothing_but_a_declared_switch(self):
         # The one set_control call writes a name drawn from history.CONTROLS,
@@ -319,11 +321,12 @@ class ThePageChangesOnlyItsDeclaredSwitches(unittest.TestCase):
         self.assertIn("for name in history.CONTROLS if name in given", self.SOURCE)
         self.assertEqual(self.SOURCE.count("name = names[0]"), 1)
 
-    def test_neither_switch_can_reach_the_relay_or_a_threshold(self):
-        # The inverter switch narrows what the night believes; it is not a
-        # way to make the night buy. Off, the loop only skips the cloud.
+    def test_no_switch_can_reach_the_relay_or_a_threshold(self):
+        # The grid switches narrow what the night believes; they are not a
+        # way to make the night buy. Off, the loop only skips the cloud or
+        # the sentinel's knock.
         main_source = (ROOT / "main.py").read_text()
-        self.assertIn("grid.read(ask_inverter)", main_source)
+        self.assertIn("grid.read(ask_inverter, ask_sentinel)", main_source)
 
     def test_the_server_cannot_reach_the_plug(self):
         # The switch says whether the watcher may decide. It is not a relay,

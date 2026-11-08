@@ -18,15 +18,18 @@ the plug what its relay is actually doing, because what it last commanded is
 no longer evidence once a person can switch it by hand - that read reaches the
 record and never a decision.
 
-**The page can also leave the inverter out.** A second switch,
-`control.inverter`, thrown through the same route, decides whether blackout
-mode asks the Deye Cloud at all. Off, the cloud is not called and the sentinel
-alone judges the grid; switched back on, the inverter has to be seen holding
-the grid for the whole `DEYE_GRID_SETTLE` again. It can only narrow what the
-night believes - off with no sentinel, nothing says the grid is there and the
-night does not buy. These two are the only things on the page that change
-anything, and `tests/test_contract.py::ThePageChangesOnlyItsDeclaredSwitches`
-fails if a third appears.
+**The page can also leave the inverter or the sentinel out.** Two more
+switches, `control.inverter` and `control.sentinel`, thrown through the same
+route and drawn as one three-way switch (`both` / `inverter only` /
+`sentinel only`), decide whom blackout mode asks about the grid. Left out, the
+cloud is not called, or the sentinel not knocked on; the inverter switched
+back on has to be seen holding the grid for the whole `DEYE_GRID_SETTLE`
+again. They can only narrow what the night believes - with nobody left to
+ask, nothing says the grid is there and the night does not buy - and the
+route refuses to store both off. These three are the only things on the page
+that change anything, and
+`tests/test_contract.py::ThePageChangesOnlyItsDeclaredSwitches` fails if a
+fourth appears.
 
 **Two inputs to the arithmetic, and only two**: the plug's own meter and the
 Open-Meteo forecast. The inverter is read for one thing - whether the grid is
@@ -54,7 +57,7 @@ windows is explained there, and it is the file to update when the rules change.
 | `solar_forecast.py` | Open-Meteo hourly yield for this roof, and the row covering "now" |
 | `deye_cloud.py` | Deye Cloud client: grid voltage and frequency only, for blackout mode |
 | `history.py` | the SQLite logbook: `samples`, `events`, `forecasts` |
-| `dashboard.py` | HTTP server for the page and its JSON. Reads, apart from the one route that throws the page's two switches |
+| `dashboard.py` | HTTP server for the page and its JSON. Reads, apart from the one route that throws the page's switches |
 | `dashboard.html` | the page itself - vanilla JS, hand-drawn SVG charts, no build step |
 | `check.py` | one-off status report from the terminal |
 | `demo.py` | fills a throwaway logbook with invented data and serves the page |
@@ -176,8 +179,8 @@ then crops the image, so `--window-size=400,...` shows a false clip - ask for
   on a LAN with no reverse DNS - `dashboard.Server` skips it. Do not go back to
   plain `ThreadingHTTPServer`.
 - The dashboard is **unauthenticated**, on the LAN by design, and it writes
-  two booleans, one per request, through `POST /api/control`: the pause, and
-  whether the inverter is asked about the grid. Anyone who can reach the page
+  three booleans, one per request, through `POST /api/control`: the pause, and
+  whether the inverter and the sentinel are asked about the grid. Anyone who can reach the page
   can stop the watcher heating, which is the whole reason
   the port must not be forwarded - `docker-compose.yml` has an optional ngrok
   profile that does exactly that, and turning it on puts the switch on the

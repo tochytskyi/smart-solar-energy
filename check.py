@@ -182,7 +182,10 @@ async def check_decision(forecast_result, delivered=None):
         ask_inverter = switch(history.CONTROL_INVERTER) is not False
         if cloud is not None and not ask_inverter:
             print("  inverter   : switched OFF from the dashboard - not asked")
-        seen, grid_said = await watcher.GridWatch(cloud).read(ask_inverter)
+        ask_sentinel = switch(history.CONTROL_SENTINEL) is not False
+        if watcher.BLACKOUT_SENTINEL_IP and not ask_sentinel:
+            print("  sentinel   : switched OFF from the dashboard - not asked")
+        seen, grid_said = await watcher.GridWatch(cloud).read(ask_inverter, ask_sentinel)
         grid_up = seen["grid_up"]
         if seen["grid_volts"] is not None:
             print("  inverter   : weakest phase %.0f V, %.2f Hz, %s, reported %d s ago" % (

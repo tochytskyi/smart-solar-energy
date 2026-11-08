@@ -13,16 +13,18 @@ Routes:
     GET  /api/export.csv   ?hours=168              the same samples as a file
     POST /api/control      {"enabled": true|false}  pause or resume the switching
                            {"inverter": true|false} let blackout mode ask the inverter, or not
+                           {"sentinel": true|false} let blackout mode ask the sentinel, or not
 
 Every route but the last is read-only, and the last one writes one boolean
 per request, out of history.CONTROLS and nothing else: whether the watcher may
-command the relay at all, and whether the grid may be judged by the inverter.
+command the relay at all, and whether the grid may be judged by the inverter,
+by the sentinel, or both - never neither, which is refused.
 It cannot switch the socket itself, cannot change a threshold, and cannot
 reach anything else in the logbook.
 
 It is all unauthenticated: it exposes the numbers the watcher decides on,
 never the credentials it decides with. Anyone who can reach the page can
-pause the watcher, or stop it asking the inverter, which is the reason this
+pause the watcher, or stop it asking the inverter or the sentinel, which is the reason this
 belongs on the LAN and nowhere else. Do not forward the port.
 """
 
@@ -42,7 +44,7 @@ CSV_COLUMNS = (
     "ts", "phase", "pv_forecast_kwh", "peak_kw", "cloud_cover",
     "rain_mm", "plug_power_w", "delivered_kwh", "ran_hours", "free_kwh", "target_kwh",
     "grid_up", "grid_source", "grid_volts", "grid_hz", "grid_age_s", "grid_status",
-    "grid_stable_s", "inverter_enabled",
+    "grid_stable_s", "inverter_enabled", "sentinel_enabled",
     "enabled", "wanted", "socket_on", "reason",
 )
 
@@ -147,6 +149,7 @@ def _handler_class(logbook, settings, on_control=None):
                 # The same default for the same reason: an unreadable switch
                 # leaves the inverter asked, as main.py does.
                 "inverter": logbook.control(history.CONTROL_INVERTER, True),
+                "sentinel": logbook.control(history.CONTROL_SENTINEL, True),
             }
 
         def _samples(self, query):
@@ -194,6 +197,16 @@ def _handler_class(logbook, settings, on_control=None):
                 return self._json({"error": "expected " + expected}, status=400)
 
             wanted = bool(value)
+            # The grid's two witnesses may each be left out, but not both: with
+            # neither asked nothing can say the grid is there, and the night
+            # would stop buying from a click that looked like choosing a source.
+            # The page switches one on before the other off, so it never asks.
+            witnesses = (history.CONTROL_INVERTER, history.CONTROL_SENTINEL)
+            if name in witnesses and not wanted and not any(
+                    logbook.control(other, True) for other in witnesses if other != name):
+                return self._json({"error": "the inverter and the sentinel cannot both be"
+                                   " switched off", name: logbook.control(name, True)},
+                                  status=409)
             before = logbook.control(name, True)
             logbook.set_control(name, wanted)
             after = logbook.control(name, True)

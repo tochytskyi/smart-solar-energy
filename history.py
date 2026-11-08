@@ -9,10 +9,10 @@ Four tables in one SQLite file:
   forecasts  the hourly solar outlook as it was fetched, one row per day, so
              the chart can draw the curve the decision was actually made on.
   control    the switches the page may throw: whether the watcher is allowed
-             to switch the socket at all, and whether blackout mode may ask
-             the inverter about the grid. They are the only rows here
-             anything outside this process writes, and the only reason the
-             dashboard is not purely a reader.
+             to switch the socket at all, and which of the inverter and the
+             sentinel blackout mode may ask about the grid. They are the only
+             rows here anything outside this process writes, and the only
+             reason the dashboard is not purely a reader.
 
 SQLite rather than a text file because the dashboard asks for "the last three
 days" and "only the warnings" without re-reading megabytes, and because one
@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS samples (
     grid_status         TEXT,
     grid_stable_s       REAL,
     inverter_enabled    INTEGER,
+    sentinel_enabled    INTEGER,
     enabled             INTEGER,
     wanted              INTEGER,
     socket_on           INTEGER,
@@ -95,7 +96,7 @@ SAMPLE_FIELDS = (
     "cloud_cover", "rain_mm", "wet_fraction", "plug_power_w", "delivered_kwh",
     "ran_hours", "free_kwh", "target_kwh", "grid_up", "grid_source", "grid_volts",
     "grid_hz", "grid_age_s", "grid_status", "grid_stable_s", "inverter_enabled",
-    "enabled", "wanted", "socket_on", "reason",
+    "sentinel_enabled", "enabled", "wanted", "socket_on", "reason",
 )
 
 LEVELS = ("info", "warn", "error")
@@ -113,10 +114,17 @@ CONTROL_ENABLED = "enabled"
 # nothing can say the grid is there and the night does not buy.
 CONTROL_INVERTER = "inverter"
 
+# Whether blackout mode may ask the sentinel. Off, it is not knocked on at all
+# and the inverter alone decides - for a sentinel that is unplugged, moved, or
+# on a circuit that turned out to be backed, without editing .env. The same
+# narrowing as above: off, a cloud that cannot answer means the night does not
+# buy. The page never stores both of these off, and the server refuses it.
+CONTROL_SENTINEL = "sentinel"
+
 # Every switch that may be thrown from outside. An unknown name is refused
 # rather than created, so a stray POST cannot invent a setting the watcher
 # will never read.
-CONTROLS = (CONTROL_ENABLED, CONTROL_INVERTER)
+CONTROLS = (CONTROL_ENABLED, CONTROL_INVERTER, CONTROL_SENTINEL)
 
 # A gap longer than this between two samples is downtime, not socket time, so
 # the daily totals stop counting across it.

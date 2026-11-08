@@ -163,17 +163,31 @@ def announce_control(name, on):
     nothing - it only means the Log panel shows the flip at the second it
     happened rather than up to a CHECK_INTERVAL later.
     """
-    if name == history.CONTROL_INVERTER:
-        log("inverter switched back ON from the page - it decides the grid again,"
-            " after holding it for %d min" % (DEYE_GRID_SETTLE // 60) if on
-            else "inverter switched OFF from the page - %s" % (
-                "only the sentinel decides the grid" if BLACKOUT_SENTINEL_IP
-                else "nothing decides the grid, so the night will not buy"),
+    if name in (history.CONTROL_INVERTER, history.CONTROL_SENTINEL):
+        log("%s switched %s from the page - %s%s" % (
+            name, "back ON" if on else "OFF", who_decides(
+                LOGBOOK.control(history.CONTROL_INVERTER, True),
+                LOGBOOK.control(history.CONTROL_SENTINEL, True)),
+            ", once it has held the grid for %d min" % (DEYE_GRID_SETTLE // 60)
+            if on and name == history.CONTROL_INVERTER and DEYE_APP_ID else ""),
             "info" if on else "warn", "system")
         return
     log("resumed from the page - switching the socket again" if on
         else "PAUSED from the page - the socket is left exactly as it is",
         "info" if on else "warn", "decision")
+
+
+def who_decides(ask_inverter, ask_sentinel):
+    """Who judges the grid with the page's two switches set so, in words for the log."""
+    inverter = ask_inverter and bool(DEYE_APP_ID)
+    sentinel = ask_sentinel and bool(BLACKOUT_SENTINEL_IP)
+    if inverter and sentinel:
+        return "the inverter decides the grid, the sentinel when it cannot say"
+    if inverter:
+        return "only the inverter decides the grid - when it cannot say, the night will not buy"
+    if sentinel:
+        return "only the sentinel decides the grid"
+    return "nothing decides the grid, so the night will not buy"
 
 
 def settings():
@@ -502,7 +516,8 @@ class Recorder:
 
     def record(self, **fields):
         key = (fields.get("socket_on"), fields.get("wanted"), fields.get("enabled"),
-               fields.get("inverter_enabled"), fields.get("grid_up"),
+               fields.get("inverter_enabled"), fields.get("sentinel_enabled"),
+               fields.get("grid_up"),
                fields.get("grid_source"), fields.get("reason"))
         now = time.monotonic()
         if key == self._key and now - self._written_at < self._interval:
@@ -551,6 +566,10 @@ class GridWatch:
     The sentinel is knocked on every pass even while the inverter is being
     believed, so a contradiction between them reaches the log rather than
     waiting for the night the inverter goes quiet to be discovered.
+
+    Either can be left out from the page. Both narrow what the night may
+    believe and never widen it: with only the inverter asked, a cloud that
+    cannot say means the night does not buy.
     """
 
     def __init__(self, cloud):
@@ -559,15 +578,20 @@ class GridWatch:
         self._disagree = False
         self._last = None           # (up, source) as last reported
         self._held_since = None     # logger time the inverter last took the grid
+        self._ask_sentinel = True
 
-    async def read(self, ask_inverter=True):
+    async def read(self, ask_inverter=True, ask_sentinel=True):
         """(the grid_* fields for the record, the reason-line phrase).
 
         `ask_inverter` is the page's switch. Off, the cloud is not called at
         all, and the inverter's hold on the grid is forgotten: switched back
         on, it has to be seen holding the grid for the whole settle time
         again, rather than trusting a run it was not watched for.
+
+        `ask_sentinel` is the other one. Off, the sentinel is not knocked on,
+        so it can neither stand in for the cloud nor contradict it.
         """
+        self._ask_sentinel = ask_sentinel
         fields = {"grid_up": None, "grid_source": None, "grid_volts": None,
                   "grid_hz": None, "grid_age_s": None, "grid_status": None,
                   "grid_stable_s": None}
@@ -591,7 +615,7 @@ class GridWatch:
                 else:
                     self._doubt(None)
 
-        sentinel = await sentinel_answers() if BLACKOUT_SENTINEL_IP else None
+        sentinel = await sentinel_answers() if BLACKOUT_SENTINEL_IP and ask_sentinel else None
         where = "%s:%d" % (BLACKOUT_SENTINEL_IP, BLACKOUT_SENTINEL_PORT)
         if reading is not None:
             up, said = self._verdict(reading, fields["grid_stable_s"])
@@ -602,6 +626,9 @@ class GridWatch:
             said = "sentinel %s %s" % (where, "answers" if sentinel else "is not answering")
         elif self._cloud is not None and not ask_inverter:
             said = "the inverter is switched off from the page and there is no sentinel"
+        elif BLACKOUT_SENTINEL_IP and not ask_sentinel:
+            said = "the sentinel is switched off from the page and the inverter %s" % (
+                "cannot say" if self._cloud is not None else "is not configured")
         else:
             said = "nothing can say whether the grid is there"
 
@@ -646,7 +673,8 @@ class GridWatch:
             log("inverter grid reading usable again - it decides the grid", category="system")
         elif self._trouble is None:
             log("inverter grid reading %s - %s" % (why, "the sentinel decides until it is back"
-                if BLACKOUT_SENTINEL_IP else "the night will not buy until it is back"),
+                if BLACKOUT_SENTINEL_IP and self._ask_sentinel
+                else "the night will not buy until it is back"),
                 "warn", "system")
         self._trouble = why
 
@@ -657,8 +685,13 @@ class GridWatch:
         grid the inverter refuses still powers the sentinel, so "rejected"
         against "answers" is the two agreeing, not a fault.
         """
+        if sentinel_up is None:
+            # Not asked: no contradiction to report, and none to call settled
+            # either - switched back on, a sentinel still at odds is warned again.
+            self._disagree = False
+            return
         live = reading["volts"] >= deye_cloud.PHASE_PRESENT_VOLTS or reading["hz"] > 0
-        disagree = sentinel_up is not None and sentinel_up != live
+        disagree = sentinel_up != live
         if disagree and not self._disagree:
             log("inverter reads %s but sentinel %s %s - believing the inverter" % (
                 "mains" if live else "NO mains", where,
@@ -766,10 +799,12 @@ async def main():
 
     log("controlling %s only, %.1f kWh/day budget, %.1f h/day allowance"
         % (PLUG_IP, DEVICE_DAILY_KWH, DEVICE_DAILY_HOURS))
-    if cloud is not None and not LOGBOOK.control(history.CONTROL_INVERTER, True):
-        log("inverter still switched OFF from an earlier session - %s" % (
-            "only the sentinel decides the grid" if BLACKOUT_SENTINEL_IP
-            else "nothing decides the grid, so the night will not buy"), "warn", "system")
+    for name, there in ((history.CONTROL_INVERTER, cloud is not None),
+                        (history.CONTROL_SENTINEL, BLACKOUT_MODE and bool(BLACKOUT_SENTINEL_IP))):
+        if there and not LOGBOOK.control(name, True):
+            log("%s still switched OFF from an earlier session - %s" % (name, who_decides(
+                LOGBOOK.control(history.CONTROL_INVERTER, True),
+                LOGBOOK.control(history.CONTROL_SENTINEL, True))), "warn", "system")
     if not LOGBOOK.control(history.CONTROL_ENABLED, True):
         log("still PAUSED from an earlier session - the socket will not be switched"
             " until the page resumes it", "warn", "decision")
@@ -829,12 +864,13 @@ async def main():
         # - so the page always knows, and the record shows the outages
         # themselves and not just the nights they cost. Only the night decides
         # on it.
-        # The page's other switch, read the same way and defaulting the same
-        # way: an unreadable logbook leaves the inverter asked.
+        # The page's other switches, read the same way and defaulting the same
+        # way: an unreadable logbook leaves the inverter and the sentinel asked.
         ask_inverter = LOGBOOK.control(history.CONTROL_INVERTER, True)
+        ask_sentinel = LOGBOOK.control(history.CONTROL_SENTINEL, True)
         seen, grid_said = {}, None
         if BLACKOUT_MODE:
-            seen, grid_said = await grid.read(ask_inverter)
+            seen, grid_said = await grid.read(ask_inverter, ask_sentinel)
 
         # How long the relay has already been closed today, read back off the
         # logbook rather than counted in this process, so a restart mid-window
@@ -902,6 +938,7 @@ async def main():
             # Only meaningful where there is an inverter to ask; blank otherwise,
             # so the page does not report a switch that changes nothing.
             inverter_enabled=ask_inverter if cloud is not None else None,
+            sentinel_enabled=ask_sentinel if BLACKOUT_MODE and BLACKOUT_SENTINEL_IP else None,
             enabled=enabled,
             wanted=wanted,
             socket_on=socket_on,

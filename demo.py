@@ -119,6 +119,9 @@ PAUSED_FROM, PAUSED_TO = 9, 3
 # And a stretch with the inverter switched off from the page, so the sentinel
 # alone decides the grid and the page has to say so.
 INVERTER_OFF_FROM, INVERTER_OFF_TO = 14, 12
+# And one with the sentinel left out instead, so the inverter alone decides -
+# long enough to take in a stale cloud, when nothing can say the grid is there.
+SENTINEL_OFF_FROM, SENTINEL_OFF_TO = 30, 20
 
 
 def grid_is_up(local):
@@ -171,6 +174,9 @@ def fill(book):
     inverter_off_from = time.time() - INVERTER_OFF_FROM * 3600
     inverter_off_to = time.time() - INVERTER_OFF_TO * 3600
     was_asked = True
+    sentinel_off_from = time.time() - SENTINEL_OFF_FROM * 3600
+    sentinel_off_to = time.time() - SENTINEL_OFF_TO * 3600
+    was_knocked = True
 
     while moment < time.time():
         local = datetime.fromtimestamp(moment)
@@ -201,6 +207,14 @@ def fill(book):
                        else "inverter switched OFF from the page - only the sentinel decides"
                        " the grid", "info" if asked else "warn", "system", at=moment)
             was_asked = asked
+        knocked = not (sentinel_off_from <= moment < sentinel_off_to)
+        if knocked != was_knocked:
+            book.event("sentinel switched back ON from the page - the inverter decides the grid,"
+                       " the sentinel when it cannot say" if knocked
+                       else "sentinel switched OFF from the page - only the inverter decides"
+                       " the grid - when it cannot say, the night will not buy",
+                       "info" if knocked else "warn", "system", at=moment)
+            was_knocked = knocked
         # Off from the page, the cloud is not asked at all - which, for the
         # page, looks like a stale cloud with nothing recorded from it.
         cloud_stale = cloud_is_stale(local)
@@ -218,7 +232,10 @@ def fill(book):
         stable = None if held_since is None else moment - held_since
         age = 360 + (moment % 1800) if stale else 20 + random.random() * 60
         source = "sentinel" if stale else "inverter"
-        if stale:
+        if stale and not knocked:
+            source, grid_up = None, None
+            said = "the sentinel is switched off from the page and the inverter cannot say"
+        elif stale:
             grid_up = mains
             said = "sentinel 192.168.0.50:80 %s" % ("answers" if mains else "is not answering")
         elif not mains:
@@ -238,7 +255,10 @@ def fill(book):
                        "warn" if cloud_stale else "info", "system", at=moment)
             was_stale = cloud_stale
         if grid_up != was_up:
-            if grid_up:
+            if grid_up is None:
+                book.event("grid UNKNOWN - %s, the night will not buy" % said,
+                           "warn", "system", at=moment)
+            elif grid_up:
                 book.event("grid is back - %s" % said, "info", "system", at=moment)
             else:
                 book.event("grid went DOWN - %s, the night will not buy" % said,
@@ -251,7 +271,11 @@ def fill(book):
                       % (judged["pv_kwh"], SETTINGS["house_daytime_kwh"], free))
             reason += (" - buying %.1f kWh of it from the grid" % target if target
                        else " - covers %.1f kWh, waiting for sun" % SETTINGS["device_daily_kwh"])
-            if wanted and not grid_up:
+            if wanted and grid_up is None:
+                wanted = False
+                reason = reason.replace(" - buying", " - would buy") + \
+                    " - but %s: holding off" % said
+            elif wanted and not grid_up:
                 wanted = False
                 reason = reason.replace(" - buying", " - would buy") + \
                     " - but %s, so the grid is down: holding off" % said
@@ -306,6 +330,7 @@ def fill(book):
             grid_age_s=round(age) if asked else None,
             grid_stable_s=None if stable is None else round(stable),
             inverter_enabled=asked,
+            sentinel_enabled=knocked,
             # The inverter's flow word: "Static" whenever nothing crosses the meter,
             # outage or not, which is why nothing decides on it.
             grid_status=None if not asked else "Purchasing energy" if relay and grid_up

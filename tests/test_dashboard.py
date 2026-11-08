@@ -217,9 +217,10 @@ class Routes(unittest.TestCase):
 
     def tearDown(self):
         # Every test here starts from a watcher that is switching and asking
-        # the inverter.
+        # both the inverter and the sentinel.
         self.book.set_control(history.CONTROL_ENABLED, True)
         self.book.set_control(history.CONTROL_INVERTER, True)
+        self.book.set_control(history.CONTROL_SENTINEL, True)
 
     def test_the_state_says_the_watcher_is_switching_until_it_is_paused(self):
         self.assertIs(self.json("/api/state")["enabled"], True)
@@ -268,6 +269,28 @@ class Routes(unittest.TestCase):
         self.assertIs(self.json("/api/state")["enabled"], True)
         self.post("/api/control", {"enabled": False})
         self.assertIs(self.json("/api/state")["inverter"], False)
+
+    def test_the_sentinel_is_asked_until_it_is_switched_off(self):
+        self.assertIs(self.json("/api/state")["sentinel"], True)
+        status, payload = self.post("/api/control", {"sentinel": False})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, {"sentinel": False, "stored": True})
+        state = self.json("/api/state")
+        self.assertEqual((state["sentinel"], state["inverter"]), (False, True))
+
+    def test_the_inverter_and_the_sentinel_are_never_both_left_out(self):
+        # Neither asked, nothing can say the grid is there: a click that read
+        # as choosing a source would quietly stop the night buying.
+        self.post("/api/control", {"inverter": False})
+        status, payload = self.post("/api/control", {"sentinel": False})
+        self.assertEqual(status, 409)
+        self.assertIs(payload["sentinel"], True)
+        self.post("/api/control", {"sentinel": True})
+        self.post("/api/control", {"inverter": True})
+        self.post("/api/control", {"sentinel": False})
+        self.assertEqual(self.post("/api/control", {"inverter": False})[0], 409)
+        state = self.json("/api/state")
+        self.assertEqual((state["inverter"], state["sentinel"]), (True, False))
 
     def test_two_switches_in_one_request_are_refused(self):
         # Which one did the page mean? Neither moves rather than guessing.

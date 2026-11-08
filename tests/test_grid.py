@@ -202,15 +202,17 @@ def reading(volts=230.0, hz=50.0, age=30.0, at=None):
 class Watch(unittest.TestCase):
     """GridWatch: the inverter's verdict, held for the settle time; the sentinel when it cannot say."""
 
-    def read(self, cloud, sentinel=True, watch=None, ip="10.0.0.9", ask=True):
+    def read(self, cloud, sentinel=True, watch=None, ip="10.0.0.9", ask=True, knock=True):
         watch = watch or main.GridWatch(cloud)
         watch._cloud = cloud            # a reused watch, asked of a changed cloud
         lines = []
+        knocker = mock.AsyncMock(return_value=sentinel)
         with mock.patch.multiple(main, BLACKOUT_SENTINEL_IP=ip, DEYE_MAX_AGE=300.0,
                                  DEYE_GRID_SETTLE=600.0,
-                                 sentinel_answers=mock.AsyncMock(return_value=sentinel),
+                                 sentinel_answers=knocker,
                                  log=lambda message, *a, **k: lines.append((message, a, k))):
-            fields, said = asyncio.run(watch.read(ask))
+            fields, said = asyncio.run(watch.read(ask, knock))
+        self.knocked = knocker.await_count
         return fields, said, lines, watch
 
     def held(self, minutes, volts=230.0):
@@ -310,6 +312,25 @@ class Watch(unittest.TestCase):
         fields, said, _, _ = self.read(FakeCloud(reading()), sentinel=None, ip="", ask=False)
         self.assertIsNone(fields["grid_up"])
         self.assertIn("switched off from the page", said)
+
+    def test_the_sentinel_switched_off_is_not_knocked_on(self):
+        fields, _, lines, _ = self.read(FakeCloud(reading()), sentinel=False, knock=False)
+        self.assertEqual(self.knocked, 0)
+        self.assertEqual(fields["grid_source"], "inverter")
+        # Not asked is not silent: no contradiction to warn about.
+        self.assertFalse([m for m, _, _ in lines if "believing the inverter" in m])
+
+    def test_the_sentinel_switched_off_does_not_stand_in_for_the_cloud(self):
+        fields, said, lines, _ = self.read(FakeCloud(error="unreachable"), sentinel=True,
+                                           knock=False)
+        self.assertIsNone(fields["grid_up"])
+        self.assertIn("the sentinel is switched off from the page", said)
+        self.assertTrue(any("the night will not buy until it is back" in m
+                            for m, _, _ in lines))
+        with mock.patch.multiple(main, BLACKOUT_MODE=True):
+            on, why = main.decide_night({"pv_kwh": 2.0, "hours": []}, 0.0, 0.0, 0.0,
+                                        fields["grid_up"], said)
+        self.assertFalse(on)
 
     def test_switched_back_on_the_inverter_has_to_hold_the_grid_again(self):
         # Held for half an hour, then left out from the page: nobody watched
