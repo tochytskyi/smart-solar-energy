@@ -221,9 +221,10 @@ async def check_decision(forecast_result, delivered=None):
                   watcher.SOLAR_START.strftime("%H:%M")))
         if watcher.BLACKOUT_MODE:
             print("  blackout   : all or nothing - %d h forecast at %.1f kW or more,"
-                  " the roof %s the whole %.1f kWh" % (
+                  " the roof %s %.1f kWh (%.0f%% of %.1f)" % (
                       watcher.strong_hours(outlook), watcher.DEVICE_POWER_KW,
                       "carries" if watcher.solar_covers(outlook) else "cannot carry",
+                      watcher.solar_needed_kwh(), watcher.BLACKOUT_SOLAR_SHARE * 100,
                       watcher.DEVICE_DAILY_KWH))
 
     hour = solar_forecast.hour_at(outlook, now) if outlook else None

@@ -31,8 +31,9 @@ comes out of it. The night buys only while the grid is there: by the
 inverter's own grid voltage, read off the Deye Cloud, or - when the cloud
 cannot say, or says it too late - by whether BLACKOUT_SENTINEL_IP, a device on
 a circuit the battery does not back up, answers on the LAN. And the ration is
-no longer split: the roof gets the day only when it can carry the whole
-DEVICE_DAILY_KWH, otherwise the night buys all of it. The day window then runs
+no longer split: the roof gets the day only when it can carry at least
+BLACKOUT_SOLAR_SHARE of DEVICE_DAILY_KWH, otherwise the night buys all of it.
+The day window then runs
 only in hours forecast to make DEVICE_POWER_KW or more - an hour under that is
 an hour the load would be drawing the difference from the battery.
 
@@ -123,6 +124,10 @@ BLACKOUT_SENTINEL_IP = config("BLACKOUT_SENTINEL_IP", "", required=False).strip(
 # Any port will do: a refused connection still proves the host is up. A port it
 # actually listens on is safer, because some devices drop rather than refuse.
 BLACKOUT_SENTINEL_PORT = int(config("BLACKOUT_SENTINEL_PORT", "80", required=False))
+# How much of the ration the roof must be able to carry before blackout mode
+# leaves the day to it. Below this the night buys the whole ration; at or above
+# it the night buys nothing, and the load takes what the strong hours give.
+BLACKOUT_SOLAR_SHARE = float(config("BLACKOUT_SOLAR_SHARE", "0.7", required=False))
 
 # The inverter's own view of the grid, from the Deye Cloud: blackout mode's
 # first opinion whenever its credentials are set, with the sentinel above as
@@ -218,6 +223,7 @@ def settings():
         "blackout_sentinel": "%s:%d" % (BLACKOUT_SENTINEL_IP, BLACKOUT_SENTINEL_PORT)
                              if BLACKOUT_MODE and BLACKOUT_SENTINEL_IP else None,
         "blackout_inverter": BLACKOUT_MODE and bool(DEYE_APP_ID),
+        "blackout_solar_share": BLACKOUT_SOLAR_SHARE,
         "inverter_max_age": DEYE_MAX_AGE,
         "inverter_settle": DEYE_GRID_SETTLE,
     }
@@ -403,17 +409,23 @@ def strong_hours(outlook):
     return sum(1 for row in outlook["hours"] if row["kw"] >= DEVICE_POWER_KW)
 
 
-def solar_covers(outlook):
-    """Blackout mode: whether the roof alone can carry the whole daily ration.
+def solar_needed_kwh():
+    """Blackout mode: the kWh the roof must be able to carry to be given the day."""
+    return DEVICE_DAILY_KWH * BLACKOUT_SOLAR_SHARE
 
-    Both ways of counting have to agree. The day total less the house is the
+
+def solar_covers(outlook):
+    """Blackout mode: whether the roof can carry enough of the ration to have the day.
+
+    Enough is BLACKOUT_SOLAR_SHARE of it, and both ways of counting have to agree. The day total less the house is the
     usual one. The strong hours are the other: the day window only runs in
     them, so a big total spread thin under cloud is no use to it. Judging the
     night on the total alone would skip the buy for a day the gate never
     opens, which is the load left cold all over again.
     """
-    return free_solar_kwh(outlook) >= DEVICE_DAILY_KWH \
-        and strong_hours(outlook) * DEVICE_POWER_KW >= DEVICE_DAILY_KWH
+    needed = solar_needed_kwh()
+    return free_solar_kwh(outlook) >= needed \
+        and strong_hours(outlook) * DEVICE_POWER_KW >= needed
 
 
 def night_target_kwh(outlook):
@@ -425,7 +437,8 @@ def night_target_kwh(outlook):
 
     In blackout mode it is all or nothing. A shortfall left to the day would
     be met by the battery in any hour the roof falls short, so the night buys
-    the whole ration unless the roof can carry every kWh of it.
+    the whole ration unless the roof can carry BLACKOUT_SOLAR_SHARE of it - and
+    then nothing, leaving the rest to whatever the strong hours bring.
     """
     if BLACKOUT_MODE:
         return 0.0 if solar_covers(outlook) else DEVICE_DAILY_KWH
@@ -504,13 +517,16 @@ def night_verdict(outlook, wet_fraction, delivered, ran_hours=0.0):
     if BLACKOUT_MODE:
         context += ", %d h at %.1f kW or more" % (strong_hours(outlook), DEVICE_POWER_KW)
 
+    share = "%.0f%% of %.1f kWh" % (BLACKOUT_SOLAR_SHARE * 100, DEVICE_DAILY_KWH)
+    if target <= 0 and BLACKOUT_MODE:
+        return False, context + " - carries at least %s, waiting for sun" % share
     if target <= 0:
         return False, context + " - covers %.1f kWh, waiting for sun" % DEVICE_DAILY_KWH
     if delivered >= target:
         return False, context + " - grid share of %.1f kWh delivered" % target
     if BLACKOUT_MODE:
-        return True, context + " - short of the whole %.1f kWh - buying %.1f kWh from" \
-            " the grid, none of it left to the roof" % (DEVICE_DAILY_KWH, target)
+        return True, context + " - short of %s - buying %.1f kWh from the grid," \
+            " none of it left to the roof" % (share, target)
     return True, context + " - buying %.1f kWh of it from the grid" % target
 
 
@@ -847,6 +863,10 @@ def preflight():
         # and no hour ever counts towards covering the day.
         raise SystemExit("BLACKOUT_MODE is on but DEVICE_POWER_KW is %r - it must be"
                          " the load's draw in kW." % DEVICE_POWER_KW)
+    if BLACKOUT_MODE and not 0 < BLACKOUT_SOLAR_SHARE <= 1:
+        # 0 would hand every day to the roof, however dark; above 1 none of them.
+        raise SystemExit("BLACKOUT_SOLAR_SHARE must be above 0 and at most 1, not %r"
+                         % BLACKOUT_SOLAR_SHARE)
     # Read, not used: client() needs both, and finding out after the restart
     # is too late to say so on the page.
     config("TAPO_EMAIL")
@@ -940,10 +960,10 @@ async def main():
                 DEYE_GRID_SETTLE // 60, DEYE_MAX_AGE // 60, ", or when it cannot say, while " + sentinel
                 if BLACKOUT_SENTINEL_IP else "")
             if cloud else sentinel), "warn", "decision")
-        log("BLACKOUT MODE: the night buys the whole %.1f kWh unless the roof can carry all"
-            " of it, and %s-%s runs only in hours forecast at %.1f kW or more" % (
-                DEVICE_DAILY_KWH, SOLAR_START.strftime("%H:%M"), SOLAR_END.strftime("%H:%M"),
-                DEVICE_POWER_KW), "warn", "decision")
+        log("BLACKOUT MODE: the night buys the whole %.1f kWh unless the roof can carry"
+            " %.0f%% of it, and %s-%s runs only in hours forecast at %.1f kW or more" % (
+                DEVICE_DAILY_KWH, BLACKOUT_SOLAR_SHARE * 100, SOLAR_START.strftime("%H:%M"),
+                SOLAR_END.strftime("%H:%M"), DEVICE_POWER_KW), "warn", "decision")
     elif DEYE_APP_ID:
         log("DEYE_APP_ID is set but BLACKOUT_MODE is off - the inverter is not asked")
 

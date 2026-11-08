@@ -569,8 +569,9 @@ ration:
 
 ```
 strong hours = hours of SOLAR_START-SOLAR_END forecast at DEVICE_POWER_KW or more
-roof covers  = free >= DEVICE_DAILY_KWH
-               and strong hours x DEVICE_POWER_KW >= DEVICE_DAILY_KWH
+needed       = DEVICE_DAILY_KWH x BLACKOUT_SOLAR_SHARE           (0.7 by default)
+roof covers  = free >= needed
+               and strong hours x DEVICE_POWER_KW >= needed
 night target = 0 if roof covers, else DEVICE_DAILY_KWH       (never a part)
 day window   = runs only while this hour's forecast >= DEVICE_POWER_KW
                (and the budget and clock brakes still bound it)
@@ -582,16 +583,20 @@ day it would never open. Judging the night on the total alone would skip the
 buy for it and leave the load cold, which is what the hourly gate did before
 it was removed outside blackout mode.
 
-With the defaults (6 kWh, 2 kW) that means a day needs 14 kWh on the roof
-**and** at least three hours forecast at 2 kW or more before the night stays
-off. Anything less and the night buys all 6 kWh. If the grid is down all
+With the defaults (6 kWh, 2 kW, 0.7) the roof has to carry 4.2 kWh: a day
+needs 12.2 kWh on the roof **and** at least three hours forecast at 2 kW or
+more before the night stays off. Anything less and the night buys all 6 kWh.
+A day that does qualify buys nothing at night, so the load takes whatever the
+strong hours give - possibly short of the full 6 kWh, by up to the 30% the
+share leaves out. Set `BLACKOUT_SOLAR_SHARE=1` to insist on the whole ration. If the grid is down all
 night, the day window runs in the strong hours only and a weak hour holds
 off: `... - would top up - but this hour is forecast at 1.4 kW, under the
 load's 2.0: holding off rather than running on the battery`. An hour with no
 forecast row holds off too.
 
-`DEVICE_POWER_KW` has to be above 0 with blackout mode on; the watcher and
-the Settings tab refuse it otherwise.
+`DEVICE_POWER_KW` has to be above 0, and `BLACKOUT_SOLAR_SHARE` above 0 and
+at most 1, with blackout mode on; the watcher and the Settings tab refuse
+them otherwise.
 
 On the page: the day-ahead card shows `hours ≥ 2.0 kW` and a blackout note,
 and the sun share is 0 whenever the night buys. The Today card shows `this

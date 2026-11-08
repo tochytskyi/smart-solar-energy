@@ -34,6 +34,7 @@ SETTINGS = {
     "house_daytime_kwh": 8,
     "blackout_mode": True, "blackout_sentinel": "192.168.0.50:80",
     "blackout_inverter": True, "inverter_max_age": 300, "inverter_settle": 600,
+    "blackout_solar_share": 0.7,
 }
 STEP = 300          # the default HISTORY_SAMPLE_INTERVAL
 DAYS = 3
@@ -110,7 +111,8 @@ def plan(outlook):
     free = min(daily, max(0.0, outlook["pv_kwh"] - SETTINGS["house_daytime_kwh"]))
     strong = sum(1 for row in outlook["hours"] if row["kw"] >= power)
     if SETTINGS["blackout_mode"]:
-        target = 0.0 if free >= daily and strong * power >= daily else daily
+        needed = daily * SETTINGS["blackout_solar_share"]
+        target = 0.0 if free >= needed and strong * power >= needed else daily
     else:
         target = min(daily, max(0.0, daily - free))
     wet = sum(1 for row in outlook["hours"]
@@ -280,9 +282,11 @@ def fill(book):
             reason = ("%.1f kWh sun, house takes %.1f - %.1f kWh reaches the load free"
                       % (judged["pv_kwh"], SETTINGS["house_daytime_kwh"], free))
             reason += ", %d h at %.1f kW or more" % (strong, SETTINGS["device_power_kw"])
-            reason += (" - short of the whole %.1f kWh - buying %.1f kWh from the grid, none"
-                       " of it left to the roof" % (SETTINGS["device_daily_kwh"], target) if target
-                       else " - covers %.1f kWh, waiting for sun" % SETTINGS["device_daily_kwh"])
+            share = "%.0f%% of %.1f kWh" % (SETTINGS["blackout_solar_share"] * 100,
+                                            SETTINGS["device_daily_kwh"])
+            reason += (" - short of %s - buying %.1f kWh from the grid, none of it left to"
+                       " the roof" % (share, target) if target
+                       else " - carries at least %s, waiting for sun" % share)
             if wanted and grid_up is None:
                 wanted = False
                 reason = reason.replace(" - buying", " - would buy") + \

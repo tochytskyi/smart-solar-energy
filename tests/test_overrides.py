@@ -255,6 +255,14 @@ class TheRestart(unittest.TestCase):
                 main.preflight()
         self.assertIn("DEVICE_POWER_KW", str(caught.exception))
 
+    def test_blackout_mode_refuses_a_share_outside_0_to_1(self):
+        for share in (0.0, 1.5):
+            with mock.patch.multiple(main, BLACKOUT_MODE=True, BLACKOUT_SENTINEL_IP="10.0.0.9",
+                                     BLACKOUT_SOLAR_SHARE=share):
+                with self.assertRaises(SystemExit) as caught:
+                    main.preflight()
+            self.assertIn("BLACKOUT_SOLAR_SHARE", str(caught.exception))
+
     def test_the_check_runs_the_watcher_s_own_preflight(self):
         self.assertIn("main.preflight()", overrides.PREFLIGHT)
         self.assertIn("overrides.FILE", overrides.PREFLIGHT)

@@ -780,8 +780,8 @@ function renderCards(data) {
   const judged = judgedDay(set, data.now);
   const ahead = curves.find((curve) => curve.day === judged);
   const share = s.target_kwh;      /* NOT `target` above - that is the budget */
-  /* Blackout mode does not split: a day the roof cannot carry whole is
-     bought whole, and none of it is the sun's. strong_hours is only recorded
+  /* Blackout mode does not split: a day the roof cannot carry enough of
+     (blackout_solar_share) is bought whole, and none of it is the sun's. strong_hours is only recorded
      with blackout mode on. */
   const allOrNothing = s.strong_hours != null;
   const sun = allOrNothing && share > 0 ? 0 : s.free_kwh;
@@ -804,8 +804,9 @@ function renderCards(data) {
       ${allOrNothing ? `<div class="row"><span>hours ≥ ${n1(set.device_power_kw, " kW")}</span><span>${
         n0(s.strong_hours, " h")}</span></div>` : ""}
     </div>
-    ${allOrNothing ? `<div class="note tight">blackout · all or nothing: the roof only if it carries the
-      whole ${n1(target, " kWh")}, and only in hours ≥ ${n1(set.device_power_kw, " kW")}</div>` : ""}
+    ${allOrNothing ? `<div class="note tight">blackout · all or nothing: the roof only if it carries
+      ${n0((set.blackout_solar_share || 1) * 100, "%")} of ${n1(target, " kWh")}, and only in hours ≥ ${
+      n1(set.device_power_kw, " kW")}</div>` : ""}
   `, weather));
 
   $("cards").innerHTML = cards.join("");

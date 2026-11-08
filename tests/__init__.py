@@ -76,6 +76,10 @@ ENV = {
 
     "MONITOR_DAYTIME": "1",
 
+    # Blackout mode's bar for leaving the day to the roof: 70% of 6 = 4.2 kWh,
+    # so 12.2 kWh on the roof and three 2 kW hours.
+    "BLACKOUT_SOLAR_SHARE": "0.7",
+
     "HISTORY_DB": "/nonexistent/tests-never-open-this.db",
     "HISTORY_RETENTION_DAYS": "30",
     "HISTORY_SAMPLE_INTERVAL": "300",

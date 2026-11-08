@@ -54,7 +54,8 @@ should make - and it only ever sizes the night's grid buy. The day window is
 the meter alone. `tests/test_contract.py::TheDecisionUsesTheDayTotal` fails if
 per-hour gating creeps back. **Blackout mode is the one exception**, on
 purpose: there the ration is all or nothing (the night buys the whole
-`DEVICE_DAILY_KWH` unless the roof can carry every kWh of it), and the day
+`DEVICE_DAILY_KWH` unless the roof can carry `BLACKOUT_SOLAR_SHARE` of it -
+70% by default - and then buys nothing), and the day
 window runs only in hours forecast at `DEVICE_POWER_KW` or more, because a
 weak hour there is drawn from the battery. Outside blackout mode `hour_kw`
 reaches `decide_solar` and changes nothing.

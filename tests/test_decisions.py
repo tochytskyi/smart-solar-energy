@@ -239,9 +239,9 @@ class BlackoutMode(unittest.TestCase):
 class BlackoutAllOrNothing(unittest.TestCase):
     """BLACKOUT_MODE never splits the ration between the roof and the night.
 
-    The roof gets the day only when the total less the house fills the 6 kWh
-    AND the hours forecast at 2 kW or more can carry it at 2 kW - three of
-    them. Anything less and the night buys all 6.
+    The roof gets the day only when the total less the house reaches 70% of
+    the 6 kWh - 4.2 - AND the hours forecast at 2 kW or more can carry that at
+    2 kW - three of them. Anything less and the night buys all 6.
     """
 
     def target(self, *kws):
@@ -249,8 +249,17 @@ class BlackoutAllOrNothing(unittest.TestCase):
             return main.night_target_kwh(outlook(*kws))
 
     def test_a_shortfall_is_bought_whole(self):
-        # 12 kWh, 4 free: outside blackout mode the night would buy 2.
+        # 12 kWh, 4 free - under 4.2: outside blackout mode the night would buy 2.
         self.assertAlmostEqual(self.target(4.0, 4.0, 4.0), 6.0)
+
+    def test_seventy_percent_is_enough_to_leave_the_day_to_the_roof(self):
+        # 12.5 kWh, 4.5 free - over 4.2, but short of 6: the night buys nothing.
+        self.assertAlmostEqual(self.target(3.0, 3.0, 3.0, 3.5), 0.0)
+
+    def test_the_share_is_a_setting(self):
+        with constants(BLACKOUT_SOLAR_SHARE=1.0):
+            self.assertAlmostEqual(self.target(3.0, 3.0, 3.0, 3.5), 6.0)
+            self.assertAlmostEqual(self.target(5.0, 5.0, 5.0), 0.0)
 
     def test_a_day_that_carries_it_all_buys_nothing(self):
         self.assertAlmostEqual(self.target(5.0, 5.0, 5.0), 0.0)
@@ -260,8 +269,8 @@ class BlackoutAllOrNothing(unittest.TestCase):
         # day window would never open, so the night must not count on it.
         self.assertAlmostEqual(self.target(*([1.6] * 10)), 6.0)
 
-    def test_three_strong_hours_are_exactly_enough(self):
-        # 14 kWh: 6 free, and three 2.0 kW hours carry exactly 6.
+    def test_three_strong_hours_are_enough_and_two_are_not(self):
+        # 14 kWh: 6 free, and three 2.0 kW hours carry 6 - over 4.2. Two carry 4.
         self.assertAlmostEqual(self.target(2.0, 2.0, 2.0, 8.0), 0.0)
         self.assertAlmostEqual(self.target(1.99, 1.99, 2.0, 8.02), 6.0)
 
@@ -270,7 +279,7 @@ class BlackoutAllOrNothing(unittest.TestCase):
             on, why = main.decide_night(outlook(4.0, 4.0, 4.0), 0.0, 0.0, 0.0, True)
         self.assertTrue(on)
         self.assertIn("3 h at 2.0 kW or more", why)
-        self.assertIn("buying 6.0 kWh", why)
+        self.assertIn("short of 70% of 6.0 kWh - buying 6.0 kWh", why)
         self.assertIn("none of it left to the roof", why)
 
     def test_off_it_still_buys_only_the_shortfall(self):
