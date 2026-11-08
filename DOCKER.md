@@ -505,7 +505,7 @@ lasts about 60 days and is renewed a day early.
 - **The budget does not move.** A night cut short by an outage just leaves
   more for the day to top up, through the same meter.
 
-`python check.py` prints the weakest phase and the frequency right now, how
+`python check.py` prints every phase, the weakest one and the frequency right now, how
 long the inverter has held the grid, how old that reading is, and which of the
 two the night would believe.
 
@@ -518,6 +518,17 @@ outages themselves. On the page:
   the inverter holds a grid that has not yet lasted `DEYE_GRID_SETTLE`, and
   says `sentinel` instead of `inverter` whenever the sentinel was the one
   deciding. Hover it for what each one said.
+- **Grid card.** On the Overview, next to the Socket card: `UP`, `DOWN`,
+  `SETTLING` or `UNKNOWN` and whose word it is; L1, L2 and L3 as the inverter
+  last reported them, the weakest marked (red only when a phase is missing,
+  or when it is the weakest of a grid the inverter refused - never against a
+  floor of ours); the frequency (`0 Hz · rejected`), how long the grid has
+  been held against `DEYE_GRID_SETTLE`, the reading's age (`too old` past
+  `DEYE_MAX_AGE`), the `GridStatus` flow word, and the sentinel's own answer
+  even on a pass the inverter decided. Its last line is the logic as the
+  page's switches stand now - `inverter, sentinel when it cannot say`,
+  `inverter only`, `sentinel only` - in amber when one is left out. The CSV
+  has `grid_l1_v`, `grid_l2_v`, `grid_l3_v` and `sentinel_up`.
 - **Socket card.** The same answer in words: `inverter 205 V`, `inverter
   rejected it · 176 V`, `inverter: a phase is missing`, `inverter held it
   4 min of 10 min`, or the sentinel's address and `(inverter silent)` when the

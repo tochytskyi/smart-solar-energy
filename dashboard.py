@@ -48,8 +48,9 @@ PAGE = Path(__file__).with_name("dashboard.html")
 CSV_COLUMNS = (
     "ts", "phase", "pv_forecast_kwh", "peak_kw", "cloud_cover",
     "rain_mm", "plug_power_w", "delivered_kwh", "ran_hours", "free_kwh", "target_kwh",
-    "hour_kw", "strong_hours", "grid_up", "grid_source", "grid_volts", "grid_hz", "grid_age_s", "grid_status",
-    "grid_stable_s", "inverter_enabled", "sentinel_enabled",
+    "hour_kw", "strong_hours", "grid_up", "grid_source", "grid_volts", "grid_l1_v", "grid_l2_v",
+    "grid_l3_v", "grid_hz", "grid_age_s", "grid_status", "grid_stable_s", "sentinel_up",
+    "inverter_enabled", "sentinel_enabled",
     "enabled", "wanted", "socket_on", "reason",
 )
 

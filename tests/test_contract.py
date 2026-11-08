@@ -207,7 +207,7 @@ class TheInverterOnlySaysWhetherTheGridIsThere(unittest.TestCase):
             ("GridVoltageL1", "GridVoltageL2", "GridVoltageL3", "GridFrequency",
              "SOC", "BatteryPower", "TotalSolarPower", "LoadPower")]}]}
         self.assertEqual(set(deye_cloud.parse(reply, "x")),
-                         {"accepted", "volts", "hz", "status", "collected"})
+                         {"accepted", "volts", "phases", "hz", "status", "collected"})
 
     def test_the_client_only_ever_reads(self):
         # Four endpoints, every one a query. Nothing that sets, controls or

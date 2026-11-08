@@ -141,7 +141,8 @@ class Cloud:
         """The inverter's latest view of the mains, or DeyeError.
 
         A dict of accepted (bool - whether the inverter had the grid at that
-        reading), volts (the weakest phase), hz, status (Deye's flow word,
+        reading), volts (the weakest phase), phases (L1, L2, L3, recorded only
+        - the weakest is the one that decides), hz, status (Deye's flow word,
         recorded only) and collected (epoch seconds of the logger's reading).
         Whether the grid is steady enough to buy from is GridWatch's call.
         """
@@ -165,7 +166,8 @@ def parse(reply, serial):
         try:
             # The weakest phase: a three-phase inverter drops the grid when any
             # one of them goes, so the best phase says nothing.
-            volts = min(float(values[key]) for key in GRID_VOLTAGES)
+            phases = tuple(float(values[key]) for key in GRID_VOLTAGES)
+            volts = min(phases)
             hz = float(values[GRID_FREQUENCY])
             collected = float(device["collectionTime"])
         except (KeyError, TypeError, ValueError):
@@ -173,6 +175,7 @@ def parse(reply, serial):
         return {
             "accepted": hz > 0 and volts >= PHASE_PRESENT_VOLTS,
             "volts": volts,
+            "phases": phases,
             "hz": hz,
             "status": values.get(GRID_STATUS),
             "collected": collected,

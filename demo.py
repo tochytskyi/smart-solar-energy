@@ -230,6 +230,10 @@ def fill(book):
         volts = (0.0 if not mains else round(176 + random.random() * 4, 1) if refused
                  else round(186 + random.random() * 4, 1) if sagging
                  else round(205 + random.random() * 20, 1))
+        # The other two phases sit a few volts above the weakest one, which
+        # moves between them the way it does on a real street.
+        phases = [volts if not mains else round(volts + random.random() * 9, 1) for _ in range(3)]
+        phases[int(moment // 3600) % 3] = volts
         hz = 0.0 if not mains or refused else round(49.95 + random.random() * 0.1, 2)
         if hz > 0 and asked:
             held_since = held_since if held_since is not None else moment
@@ -342,6 +346,10 @@ def fill(book):
             hour_kw=row["kw"] if row else None, strong_hours=strong,
             grid_source=source,
             grid_volts=volts if asked else None, grid_hz=hz if asked else None,
+            grid_l1_v=phases[0] if asked else None, grid_l2_v=phases[1] if asked else None,
+            grid_l3_v=phases[2] if asked else None,
+            # Knocked on whoever decides; it only sees whether there is mains at all.
+            sentinel_up=mains if knocked else None,
             grid_age_s=round(age) if asked else None,
             grid_stable_s=None if stable is None else round(stable),
             inverter_enabled=asked,

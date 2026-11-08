@@ -651,8 +651,9 @@ class GridWatch:
         """
         self._ask_sentinel = ask_sentinel
         fields = {"grid_up": None, "grid_source": None, "grid_volts": None,
+                  "grid_l1_v": None, "grid_l2_v": None, "grid_l3_v": None,
                   "grid_hz": None, "grid_age_s": None, "grid_status": None,
-                  "grid_stable_s": None}
+                  "grid_stable_s": None, "sentinel_up": None}
         reading = None
         if self._cloud is not None and not ask_inverter:
             self._held_since = None
@@ -664,7 +665,11 @@ class GridWatch:
             else:
                 age = max(0.0, time.time() - reading["collected"])
                 stable = self._hold(reading)
+                # Every phase, for the page: the weakest decides, but which
+                # one sags is what tells a local fault from the whole street.
+                l1, l2, l3 = reading.get("phases") or (None, None, None)
                 fields.update(grid_volts=reading["volts"], grid_hz=reading["hz"],
+                              grid_l1_v=l1, grid_l2_v=l2, grid_l3_v=l3,
                               grid_age_s=round(age), grid_status=reading["status"],
                               grid_stable_s=None if stable is None else round(stable))
                 if age > DEYE_MAX_AGE:
@@ -674,6 +679,9 @@ class GridWatch:
                     self._doubt(None)
 
         sentinel = await sentinel_answers() if BLACKOUT_SENTINEL_IP and ask_sentinel else None
+        # Recorded whoever decides, so the page can show the second opinion
+        # beside the first rather than only in a warn line when they differ.
+        fields["sentinel_up"] = sentinel
         where = "%s:%d" % (BLACKOUT_SENTINEL_IP, BLACKOUT_SENTINEL_PORT)
         if reading is not None:
             up, said = self._verdict(reading, fields["grid_stable_s"])
@@ -1054,10 +1062,14 @@ async def main():
             grid_up=seen.get("grid_up"),
             grid_source=seen.get("grid_source"),
             grid_volts=seen.get("grid_volts"),
+            grid_l1_v=seen.get("grid_l1_v"),
+            grid_l2_v=seen.get("grid_l2_v"),
+            grid_l3_v=seen.get("grid_l3_v"),
             grid_hz=seen.get("grid_hz"),
             grid_age_s=seen.get("grid_age_s"),
             grid_status=seen.get("grid_status"),
             grid_stable_s=seen.get("grid_stable_s"),
+            sentinel_up=seen.get("sentinel_up"),
             # Only meaningful where there is an inverter to ask; blank otherwise,
             # so the page does not report a switch that changes nothing.
             inverter_enabled=ask_inverter if cloud is not None else None,

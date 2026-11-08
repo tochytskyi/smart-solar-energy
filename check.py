@@ -192,6 +192,8 @@ async def check_decision(forecast_result, delivered=None):
                 seen["grid_volts"], seen["grid_hz"], "held for %d min" % (seen["grid_stable_s"] // 60)
                 if seen["grid_stable_s"] is not None else "grid NOT held",
                 seen["grid_age_s"]))
+            print("               L1 %.0f V, L2 %.0f V, L3 %.0f V" % (
+                seen["grid_l1_v"], seen["grid_l2_v"], seen["grid_l3_v"]))
             print("               %s" % grid_said)
             if seen["grid_stable_s"] is not None:
                 # One reading cannot show a hold; the running watcher times it

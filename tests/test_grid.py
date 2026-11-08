@@ -109,9 +109,13 @@ class Parse(unittest.TestCase):
         reading = deye_cloud.parse(latest(phases=(196.0, 198.0, 188.6)), "2604255378")
         self.assertAlmostEqual(reading["volts"], 188.6)
 
+    def test_every_phase_is_handed_back_for_the_record(self):
+        reading = deye_cloud.parse(latest(phases=(196.0, 198.0, 188.6)), "2604255378")
+        self.assertEqual(reading["phases"], (196.0, 198.0, 188.6))
+
     def test_the_battery_is_left_where_it_lies(self):
         reading = deye_cloud.parse(latest(), "2604255378")
-        self.assertEqual(set(reading), {"accepted", "volts", "hz", "status", "collected"})
+        self.assertEqual(set(reading), {"accepted", "volts", "phases", "hz", "status", "collected"})
 
     def test_a_reply_without_the_grid_is_no_answer(self):
         reply = latest()
@@ -230,6 +234,18 @@ class Watch(unittest.TestCase):
         self.assertEqual(fields["grid_source"], "inverter")
         self.assertEqual(fields["grid_stable_s"], 600)
         self.assertIn("the inverter has the grid", said)
+
+    def test_every_phase_and_the_sentinel_reach_the_record(self):
+        # The inverter decides, but the page draws the second opinion beside it.
+        cloud = FakeCloud(dict(reading(188.6), phases=(196.0, 198.0, 188.6)))
+        fields, _, _, _ = self.read(cloud, sentinel=True)
+        self.assertEqual((fields["grid_l1_v"], fields["grid_l2_v"], fields["grid_l3_v"]),
+                         (196.0, 198.0, 188.6))
+        self.assertIs(fields["sentinel_up"], True)
+
+    def test_a_sentinel_not_knocked_on_records_no_answer(self):
+        fields, _, _, _ = self.read(FakeCloud(reading()), sentinel=True, knock=False)
+        self.assertIsNone(fields["sentinel_up"])
 
     def test_a_grid_just_taken_is_not_up_yet(self):
         fields, said, _, _ = self.held(4)

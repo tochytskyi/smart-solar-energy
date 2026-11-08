@@ -513,7 +513,9 @@ function inverterVerdict(r, set) {
 function inverterSaid(r, set) {
   if (r.grid_volts == null) return null;
   const old = r.grid_age_s != null && set.inverter_max_age && r.grid_age_s > set.inverter_max_age;
-  return "weakest " + n0(r.grid_volts, " V") + " · " + n1(r.grid_hz, " Hz")
+  const phases = [r.grid_l1_v, r.grid_l2_v, r.grid_l3_v];
+  return (phases.every((v) => v != null) ? phases.map((v) => Math.round(v)).join("/") + " V · " : "")
+    + "weakest " + n0(r.grid_volts, " V") + " · " + n1(r.grid_hz, " Hz")
     + (r.grid_stable_s != null ? " · held " + duration(r.grid_stable_s) : r.grid_hz ? "" : " · rejected")
     + (r.grid_status ? " · " + r.grid_status : "")
     + " · " + (r.grid_age_s == null ? "age unknown" : ago(r.grid_age_s)) + (old ? " (too old)" : "");
@@ -708,6 +710,8 @@ function renderCards(data) {
           esc(gridSaid(s, set).who)} · night will not buy</div>`}
   `, s.reason));
 
+  if (set.blackout_mode) cards.push(gridCard(s, set, data));
+
   /* Today: what the load has had so far against its two brakes. */
   const curves = (data.forecasts || []).length ? data.forecasts : f ? [f] : [];
   const todays = curves.find((curve) => curve.day === dayOf(data.now));
@@ -770,6 +774,67 @@ function renderCards(data) {
     st.retention_days ? `kept ${Math.round(st.retention_days)} days` : "",
   ].filter(Boolean).join(" · ")
     + ` <a href="/api/export.csv?hours=${state.hours}">download CSV</a>`;
+}
+
+/* Grid: what blackout mode believes about the mains, and everything it was
+   believed on - each phase as the inverter last reported it, the frequency
+   that carries its own verdict, the hold against the settle time, and the
+   sentinel's answer beside it even when it was not the one deciding. The
+   logic line is the switches as they stand now, like the header badge. No
+   voltage is coloured by a floor of ours: a phase is red only when it is
+   missing, or when it is the weakest of a grid the inverter refused. */
+function gridCard(s, set, data) {
+  const g = gridSaid(s, set);
+  const settling = g.down && s.grid_source === "inverter" && s.grid_hz > 0 && s.grid_volts >= 100;
+  const [word, cls] = g.unknown ? ["UNKNOWN", "state-off"] : settling ? ["SETTLING", "state-on"]
+    : g.down ? ["DOWN", ""] : ["UP", "state-solar"];
+  const inverter = set.blackout_inverter && data.inverter !== false;
+  const sentinel = set.blackout_sentinel && data.sentinel !== false;
+
+  const phases = [s.grid_l1_v, s.grid_l2_v, s.grid_l3_v];
+  const read = phases.some((v) => v != null);
+  const refused = s.grid_hz != null && s.grid_hz <= 0;
+  const phaseRow = (v, i) => {
+    const weakest = read && v != null && v === Math.min(...phases.filter((p) => p != null));
+    const bad = v != null && (v < 100 || (refused && weakest && v > 0));
+    return `<div class="row"><span>L${i + 1}${weakest ? " · weakest" : ""}</span><span${
+      bad ? ' style="color:var(--error)"' : weakest ? ' style="font-weight:600"' : ""}>${
+      v == null ? "—" : v < 100 ? n0(v, " V") + " · missing" : n0(v, " V")}</span></div>`;
+  };
+  const old = s.grid_age_s != null && set.inverter_max_age && s.grid_age_s > set.inverter_max_age;
+  const settle = set.inverter_settle || 0;
+  const asked = (name) => s[name + "_enabled"] === 0 || s[name + "_enabled"] === false ? "not asked" : null;
+
+  const logic = !set.blackout_inverter ? "sentinel only · no inverter configured"
+    : inverter && sentinel ? "inverter, sentinel when it cannot say"
+    : inverter ? (set.blackout_sentinel ? "inverter only" : "inverter") + " · no answer, no night buy"
+    : sentinel ? "sentinel only · inverter left out"
+    : "nothing asked · the night will not buy";
+
+  return card("Grid", `
+    <div class="big ${cls}"${!cls ? ' style="color:var(--error)"' : ""}>${word}</div>
+    <div class="note tight">${g.unknown ? "nothing could say" : esc(g.who)}</div>
+    ${set.blackout_inverter ? `<div class="rows" style="margin-top:10px">
+      ${phases.map(phaseRow).join("")}
+      <div class="row"><span>frequency</span><span${refused ? ' style="color:var(--error)"' : ""}>${
+        s.grid_hz == null ? "—" : refused ? "0 Hz · rejected" : n1(s.grid_hz, " Hz")}</span></div>
+      <div class="row"><span>held</span><span${settling ? ' style="color:var(--warn)"' : ""}>${
+        s.grid_stable_s == null ? "—" : duration(s.grid_stable_s) + " / " + duration(settle)}</span></div>
+      <div class="row"><span>reading</span><span${old ? ' style="color:var(--warn)"' : ""}>${
+        asked("inverter") || (s.grid_age_s == null ? "—" : ago(s.grid_age_s) + (old ? " · too old" : ""))
+        }</span></div>
+      ${s.grid_status ? `<div class="row"><span>flow</span><span>${esc(s.grid_status)}</span></div>` : ""}
+    </div>` : ""}
+    ${set.blackout_sentinel ? `<div class="rows" style="margin-top:${set.blackout_inverter ? 5 : 10}px">
+      <div class="row"><span>sentinel</span><span${s.sentinel_up === 0 || s.sentinel_up === false
+        ? ' style="color:var(--error)"' : ""}>${asked("sentinel") || (s.sentinel_up == null ? "—"
+        : s.sentinel_up ? "online" : "offline")}</span></div>
+    </div>` : ""}
+    <div class="note" style="border-top:1px solid var(--line);padding-top:7px;margin-top:9px">
+      <span${inverter && sentinel || !set.blackout_inverter ? "" : ' style="color:var(--warn)"'}>${
+        esc(logic)}</span>${set.blackout_inverter ? `<br>counts once held ${duration(settle)}, ignored past ${
+        duration(set.inverter_max_age)} old` : ""}</div>
+  `, s.reason);
 }
 
 /* The hover carries the detail a card leaves out. */
