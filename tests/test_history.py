@@ -446,6 +446,14 @@ class Thinning(unittest.TestCase):
         self.assertIn(rows[500], kept)
         self.assertIn(rows[501], kept)      # and the moment it went off again
 
+    def test_a_short_outage_in_a_month_survives(self):
+        rows = self.rows(1000)
+        for row in rows[500:503]:
+            row["grid_up"] = 0
+        kept = history._thin(rows, 20)
+        self.assertIn(rows[500], kept)
+        self.assertIn(rows[503], kept)      # and the moment the grid came back
+
 
 class Migration(unittest.TestCase):
     """A Pi that has been running gets new columns, not a blank page."""

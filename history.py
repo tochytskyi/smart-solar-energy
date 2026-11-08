@@ -489,7 +489,11 @@ def _one(cursor):
 
 
 def _thin(rows, max_points):
-    """Keep at most max_points rows, preserving every socket transition."""
+    """Keep at most max_points rows, preserving every socket and grid transition.
+
+    The grid too: a ten-minute outage in a month's view is exactly what the
+    Grid tab is there to show, and a bucket would swallow it whole.
+    """
     if max_points <= 0 or len(rows) <= max_points:
         return rows
 
@@ -499,7 +503,7 @@ def _thin(rows, max_points):
     slot = None
     previous_state = None
     for row in rows:
-        state = (row["socket_on"], row["wanted"])
+        state = (row["socket_on"], row["wanted"], row.get("grid_up"))
         row_slot = int(row["ts"] // bucket)
         if state != previous_state or row_slot != slot or row is rows[-1]:
             kept.append(row)

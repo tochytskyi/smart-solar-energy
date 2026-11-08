@@ -24,6 +24,9 @@
   --error: #cf3a2e;
   --night: rgba(59, 116, 224, .06);
   --day: rgba(217, 164, 0, .07);
+  --l1: #3b74e0;
+  --l2: #8a56d6;
+  --l3: #13939f;
   --radius: 12px;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -49,6 +52,9 @@
   --error: #ff6a5b;
   --night: rgba(110, 160, 255, .07);
   --day: rgba(239, 195, 59, .07);
+  --l1: #6ea0ff;
+  --l2: #b48cff;
+  --l3: #3fc6d2;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
@@ -70,6 +76,9 @@
     --error: #ff6a5b;
     --night: rgba(110, 160, 255, .07);
     --day: rgba(239, 195, 59, .07);
+    --l1: #6ea0ff;
+    --l2: #b48cff;
+    --l3: #3fc6d2;
   }
 }
 
@@ -224,6 +233,12 @@ tbody tr:hover { background: var(--panel-2); }
 .tabpage > .cards + .panel { margin-top: 14px; }
 
 .scroller { overflow-x: auto; }
+.phases { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 2px 0 10px; }
+.phases > div { border-left: 3px solid; padding-left: 8px; min-width: 0; }
+.phases b { display: block; font-size: 11px; font-weight: 600; color: var(--ink-3); letter-spacing: .05em; }
+.phases span { font-size: 21px; font-weight: 650; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.phases span i { font-style: normal; font-size: 13px; font-weight: 500; color: var(--ink-2); margin-left: 2px; }
+.phases small { display: block; font-size: 11.5px; color: var(--ink-2); }
 .log { max-height: 460px; overflow: auto; }
 .log td.t { font-family: var(--mono); font-size: 12px; color: var(--ink-3); white-space: nowrap; width: 1%; }
 .tag {
@@ -307,6 +322,7 @@ footer a { color: var(--ink-2); }
 
   <nav class="tabs" id="tabs" role="tablist">
     <button data-tab="overview" role="tab">Overview</button>
+    <button data-tab="grid" role="tab">Grid</button>
     <button data-tab="forecast" role="tab">Forecast</button>
     <button data-tab="nights" role="tab">Nights</button>
     <button data-tab="log" role="tab">Log</button>
@@ -336,6 +352,34 @@ footer a { color: var(--ink-2); }
       <svg id="chart" height="330" role="img" aria-label="forecast roof, socket draw and socket history"></svg>
       <div class="tip" id="tip"></div>
     </div>
+  </section>
+  </div>
+
+  <div class="tabpage" data-tab="grid" role="tabpanel" hidden>
+  <section class="cards" id="gridcards"></section>
+  <section class="panel">
+    <div class="head">
+      <h2>Phase voltage</h2>
+      <span class="spacer"></span>
+      <div class="seg" id="gridranges"></div>
+    </div>
+    <div class="legend">
+      <span style="color:var(--l1)"><i class="swatch"></i>L1</span>
+      <span style="color:var(--l2)"><i class="swatch"></i>L2</span>
+      <span style="color:var(--l3)"><i class="swatch"></i>L3</span>
+      <span style="color:var(--error)"><i class="swatch block" style="opacity:.3"></i>grid down</span>
+      <span style="color:var(--ink-3)"><i class="swatch block" style="opacity:.4"></i>nobody could say</span>
+    </div>
+    <div class="chartbox" id="gridbox">
+      <svg id="gridchart" height="260" role="img" aria-label="each phase's voltage as the inverter reported it"></svg>
+      <div class="tip" id="gridtip"></div>
+    </div>
+  </section>
+  <section class="panel">
+    <div class="head"><h2>When the grid was down</h2><span class="spacer"></span>
+      <span class="sub" id="outage-sum" style="color:var(--ink-3);font-size:12px"></span>
+    </div>
+    <div class="scroller" id="outages"></div>
   </section>
   </div>
 
@@ -426,6 +470,8 @@ const state = {
   forecasts: [],
   settings: {},
   chartWidth: 900,
+  gridWidth: 900,
+  latest: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -710,8 +756,6 @@ function renderCards(data) {
           esc(gridSaid(s, set).who)} · night will not buy</div>`}
   `, s.reason));
 
-  if (set.blackout_mode) cards.push(gridCard(s, set, data));
-
   /* Today: what the load has had so far against its two brakes. */
   const curves = (data.forecasts || []).length ? data.forecasts : f ? [f] : [];
   const todays = curves.find((curve) => curve.day === dayOf(data.now));
@@ -776,70 +820,339 @@ function renderCards(data) {
     + ` <a href="/api/export.csv?hours=${state.hours}">download CSV</a>`;
 }
 
-/* Grid: what blackout mode believes about the mains, and everything it was
-   believed on - each phase as the inverter last reported it, the frequency
-   that carries its own verdict, the hold against the settle time, and the
-   sentinel's answer beside it even when it was not the one deciding. The
-   logic line is the switches as they stand now, like the header badge. No
-   voltage is coloured by a floor of ours: a phase is red only when it is
-   missing, or when it is the weakest of a grid the inverter refused. */
-function gridCard(s, set, data) {
-  const g = gridSaid(s, set);
-  const settling = g.down && s.grid_source === "inverter" && s.grid_hz > 0 && s.grid_volts >= 100;
-  const [word, cls] = g.unknown ? ["UNKNOWN", "state-off"] : settling ? ["SETTLING", "state-on"]
-    : g.down ? ["DOWN", ""] : ["UP", "state-solar"];
-  const inverter = set.blackout_inverter && data.inverter !== false;
-  const sentinel = set.blackout_sentinel && data.sentinel !== false;
-
-  const phases = [s.grid_l1_v, s.grid_l2_v, s.grid_l3_v];
-  const read = phases.some((v) => v != null);
-  const refused = s.grid_hz != null && s.grid_hz <= 0;
-  const phaseRow = (v, i) => {
-    const weakest = read && v != null && v === Math.min(...phases.filter((p) => p != null));
-    const bad = v != null && (v < 100 || (refused && weakest && v > 0));
-    return `<div class="row"><span>L${i + 1}${weakest ? " · weakest" : ""}</span><span${
-      bad ? ' style="color:var(--error)"' : weakest ? ' style="font-weight:600"' : ""}>${
-      v == null ? "—" : v < 100 ? n0(v, " V") + " · missing" : n0(v, " V")}</span></div>`;
-  };
-  const old = s.grid_age_s != null && set.inverter_max_age && s.grid_age_s > set.inverter_max_age;
-  const settle = set.inverter_settle || 0;
-  const asked = (name) => s[name + "_enabled"] === 0 || s[name + "_enabled"] === false ? "not asked" : null;
-
-  const logic = !set.blackout_inverter ? "sentinel only · no inverter configured"
-    : inverter && sentinel ? "inverter, sentinel when it cannot say"
-    : inverter ? (set.blackout_sentinel ? "inverter only" : "inverter") + " · no answer, no night buy"
-    : sentinel ? "sentinel only · inverter left out"
-    : "nothing asked · the night will not buy";
-
-  return card("Grid", `
-    <div class="big ${cls}"${!cls ? ' style="color:var(--error)"' : ""}>${word}</div>
-    <div class="note tight">${g.unknown ? "nothing could say" : esc(g.who)}</div>
-    ${set.blackout_inverter ? `<div class="rows" style="margin-top:10px">
-      ${phases.map(phaseRow).join("")}
-      <div class="row"><span>frequency</span><span${refused ? ' style="color:var(--error)"' : ""}>${
-        s.grid_hz == null ? "—" : refused ? "0 Hz · rejected" : n1(s.grid_hz, " Hz")}</span></div>
-      <div class="row"><span>held</span><span${settling ? ' style="color:var(--warn)"' : ""}>${
-        s.grid_stable_s == null ? "—" : duration(s.grid_stable_s) + " / " + duration(settle)}</span></div>
-      <div class="row"><span>reading</span><span${old ? ' style="color:var(--warn)"' : ""}>${
-        asked("inverter") || (s.grid_age_s == null ? "—" : ago(s.grid_age_s) + (old ? " · too old" : ""))
-        }</span></div>
-      ${s.grid_status ? `<div class="row"><span>flow</span><span>${esc(s.grid_status)}</span></div>` : ""}
-    </div>` : ""}
-    ${set.blackout_sentinel ? `<div class="rows" style="margin-top:${set.blackout_inverter ? 5 : 10}px">
-      <div class="row"><span>sentinel</span><span${s.sentinel_up === 0 || s.sentinel_up === false
-        ? ' style="color:var(--error)"' : ""}>${asked("sentinel") || (s.sentinel_up == null ? "—"
-        : s.sentinel_up ? "online" : "offline")}</span></div>
-    </div>` : ""}
-    <div class="note" style="border-top:1px solid var(--line);padding-top:7px;margin-top:9px">
-      <span${inverter && sentinel || !set.blackout_inverter ? "" : ' style="color:var(--warn)"'}>${
-        esc(logic)}</span>${set.blackout_inverter ? `<br>counts once held ${duration(settle)}, ignored past ${
-        duration(set.inverter_max_age)} old` : ""}</div>
-  `, s.reason);
-}
-
 /* The hover carries the detail a card leaves out. */
 const card = (title, body, hover) =>
   `<div class="card"${hover ? ` title="${esc(hover)}"` : ""}><h2>${title}</h2>${body}</div>`;
+
+/* ---------- grid ---------- */
+
+/* The Grid tab: what blackout mode believes about the mains, and everything
+   it was believed on - each phase as the inverter last reported it, the
+   frequency that carries the inverter's own verdict, the hold against the
+   settle time, the sentinel's answer beside it even on a pass it did not
+   decide, and whom the page's switches have it ask. No voltage is coloured
+   against a floor of ours: a phase is red only when it is missing, or when it
+   is the weakest of a grid the inverter refused. */
+
+const PHASES = ["grid_l1_v", "grid_l2_v", "grid_l3_v"];
+
+function gridState(s, set) {
+  const g = gridSaid(s, set);
+  /* Held but not yet for long enough is not an outage: amber, not red. */
+  const settling = g.down && s.grid_source === "inverter" && s.grid_hz > 0 && s.grid_volts >= 100;
+  return Object.assign(g, {
+    settling,
+    word: g.unknown ? "UNKNOWN" : settling ? "SETTLING" : g.down ? "DOWN" : "UP",
+    colour: g.unknown ? "var(--ink-2)" : settling ? "var(--warn)" : g.down ? "var(--error)" : "var(--solar)",
+  });
+}
+
+/* Since when the answer has been the one it is now, off the samples in view.
+   Reaching the first of them only says "at least this long". */
+function gridSince(rows, s) {
+  if (!rows.length || s.ts == null) return null;
+  const same = (r) => (r.grid_up == null) === (s.grid_up == null) && !!r.grid_up === !!s.grid_up;
+  let since = null;
+  for (let i = rows.length - 1; i >= 0 && same(rows[i]); i--) since = rows[i].ts;
+  return since == null ? null : { since, whole: since === rows[0].ts };
+}
+
+/* Whom the switches have blackout mode ask, as they stand now. */
+function gridLogic(set, inverter, sentinel) {
+  if (!set.blackout_inverter) return "the sentinel alone - no inverter is configured";
+  if (inverter && sentinel) return "the inverter, and the sentinel when it cannot say";
+  if (inverter) return set.blackout_sentinel ? "the inverter only - when it cannot say, the night does not buy"
+    : "the inverter - when it cannot say, the night does not buy";
+  if (sentinel) return "the sentinel only - the inverter is left out";
+  return "nothing - the inverter is left out and there is no sentinel, so the night does not buy";
+}
+
+/* Every stretch the night could not have bought: the grid read as down, or
+   nobody able to say. A row with neither witness switch recorded is from
+   before blackout mode, not an unknown grid. */
+function gridRuns(rows, until) {
+  const what = (r) => r.grid_up === 0 || r.grid_up === false ? "down"
+    : r.grid_up == null && (r.inverter_enabled != null || r.sentinel_enabled != null) ? "unknown" : null;
+  const runs = [];
+  let run = null;
+  for (const r of rows) {
+    const kind = what(r);
+    if (run && kind !== run.kind) { run.to = r.ts; runs.push(run); run = null; }
+    if (kind && !run) run = { kind, from: r.ts, rows: [] };
+    if (run) run.rows.push(r);
+  }
+  if (run) { run.to = null; runs.push(run); }
+  return runs.map((r) => Object.assign(r, { end: r.to || until }));
+}
+
+function renderGrid() {
+  const data = state.latest;
+  if (!data) return;
+  const set = data.settings || {};
+  const s = data.sample || {};
+  $("gridcards").innerHTML = set.blackout_mode
+    ? [gridNowCard(s, set, data), phasesCard(s, set), whoCard(s, set, data)].join("")
+    : `<div class="card" style="grid-column:1/-1"><h2>Grid</h2><div class="note">Blackout mode
+       is off, so nothing is asked whether the grid is there and the night buys regardless.
+       It is <b>BLACKOUT_MODE</b> on the Settings tab.</div></div>`;
+  renderGridChart();
+  renderOutages();
+}
+
+function gridNowCard(s, set, data) {
+  const g = gridState(s, set);
+  const run = gridSince(state.samples, s);
+  return card("Grid now", `
+    <div class="big" style="color:${g.colour}">${g.word}</div>
+    <div class="note tight">${g.unknown ? "nothing could say whether it is there" : esc(g.who)}</div>
+    ${run ? `<div class="note tight">${run.whole ? "for at least " + duration(data.now - run.since)
+      : "since " + esc(stamp(run.since)) + " · " + duration(data.now - run.since)}</div>` : ""}
+    <div class="note" style="color:${g.down || g.unknown ? "var(--error)" : "var(--ink-2)"}">${
+      g.down || g.unknown ? "the night will not buy" : "the night may buy"}</div>
+  `, s.reason);
+}
+
+function phasesCard(s, set) {
+  if (!set.blackout_inverter) return card("Phases", `<div class="note">No inverter is configured,
+    so nothing reads the phases - the sentinel only says whether there is mains at all.</div>`);
+  const phases = PHASES.map((k) => s[k]);
+  const present = phases.filter((v) => v != null);
+  const weakest = present.length ? Math.min(...present) : null;
+  const refused = s.grid_hz != null && s.grid_hz <= 0;
+  const old = s.grid_age_s != null && set.inverter_max_age && s.grid_age_s > set.inverter_max_age;
+  const settle = set.inverter_settle || 0;
+  const skipped = s.inverter_enabled === 0 || s.inverter_enabled === false;
+  const cell = (v, i) => {
+    const low = v != null && v === weakest;
+    const bad = v != null && (v < 100 || (refused && low && v > 0));
+    return `<div style="border-color:var(--l${i + 1})"><b>L${i + 1}</b><span${
+      bad ? ' style="color:var(--error)"' : ""}>${v == null ? "—" : n0(v) + "<i>V</i>"}</span><small>${
+      v == null ? "&nbsp;" : v < 100 ? "missing" : low ? "weakest" : "&nbsp;"}</small></div>`;
+  };
+  return card("Phases", `
+    <div class="phases">${phases.map(cell).join("")}</div>
+    <div class="rows">
+      <div class="row"><span>frequency</span><span${refused ? ' style="color:var(--error)"' : ""}>${
+        s.grid_hz == null ? "—" : refused ? "0 Hz · rejected" : n1(s.grid_hz, " Hz")}</span></div>
+      <div class="row"><span>held</span><span${s.grid_stable_s != null && s.grid_stable_s < settle
+        ? ' style="color:var(--warn)"' : ""}>${s.grid_stable_s == null ? "—"
+        : duration(s.grid_stable_s) + " / " + duration(settle)}</span></div>
+      <div class="row"><span>reading</span><span${old || skipped ? ' style="color:var(--warn)"' : ""}>${
+        skipped ? "not asked" : s.grid_age_s == null ? "none this check"
+        : ago(s.grid_age_s) + (old ? " · too old" : "")}</span></div>
+      ${s.grid_status ? `<div class="row"><span>flow</span><span>${esc(s.grid_status)}</span></div>` : ""}
+    </div>
+  `, "The inverter's last reading. It decides on the weakest phase and on its own frequency:"
+    + " 0 Hz is a grid it refused, whatever voltage is left.");
+}
+
+function whoCard(s, set, data) {
+  /* The switches as they stand now, and as the pass on screen was made. */
+  const inverter = set.blackout_inverter && data.inverter !== false;
+  const sentinel = !!set.blackout_sentinel && data.sentinel !== false;
+  const narrowed = set.blackout_inverter && !(inverter && sentinel);
+  const off = (name) => s[name + "_enabled"] === 0 || s[name + "_enabled"] === false;
+  const old = s.grid_age_s != null && set.inverter_max_age && s.grid_age_s > set.inverter_max_age;
+  const inverterSays = !set.blackout_inverter ? "not configured" : off("inverter") ? "not asked"
+    : s.grid_source === "inverter" ? "deciding" : old ? "too old · passed over"
+    : s.grid_volts == null ? "cannot say" : "passed over";
+  const sentinelSays = !set.blackout_sentinel ? "not configured" : off("sentinel") ? "not asked"
+    : s.sentinel_up == null ? "—"
+    : (s.sentinel_up ? "online" : "offline") + (s.grid_source === "sentinel" ? " · deciding" : " · second opinion");
+  const pending = ["inverter", "sentinel"].filter((name) => s[name + "_enabled"] != null
+    && (data[name] === false) !== off(name));
+  return card("Who decides", `
+    <div style="font-size:16px;font-weight:620;line-height:1.3${narrowed ? ";color:var(--warn)" : ""}">${
+      esc(gridLogic(set, inverter, sentinel))}</div>
+    ${pending.length ? `<div class="note tight" style="color:var(--warn)">${pending.join(" and ")}
+      switched from the page · applies from the next check</div>` : ""}
+    <div class="rows" style="margin-top:10px">
+      <div class="row"><span>inverter</span><span${off("inverter") ? ' style="color:var(--warn)"' : ""}>${
+        esc(inverterSays)}</span></div>
+      <div class="row"><span>sentinel${set.blackout_sentinel ? " " + esc(set.blackout_sentinel) : ""}</span><span${
+        off("sentinel") ? ' style="color:var(--warn)"' : s.sentinel_up === 0 || s.sentinel_up === false
+        ? ' style="color:var(--error)"' : ""}>${esc(sentinelSays)}</span></div>
+    </div>
+    <div class="note" style="border-top:1px solid var(--line);padding-top:7px;margin-top:9px">${
+      set.blackout_inverter ? "The inverter counts once it has held the grid "
+        + duration(set.inverter_settle) + "; a reading older than " + duration(set.inverter_max_age)
+        + " is passed over. " : ""}No answer counts as down. Change who is asked with the switch
+      at the top of the page.</div>
+  `);
+}
+
+function renderGridChart() {
+  const svg = $("gridchart");
+  const rows = state.samples;
+  const set = state.settings || {};
+  const W = state.gridWidth, H = 260;
+  const M = { top: 20, right: 16, bottom: 34, left: 44 };
+  const plotW = Math.max(10, W - M.left - M.right);
+  const plotH = H - M.top - M.bottom;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("width", W);
+  svg.__hover = null;
+
+  const read = rows.filter((r) => PHASES.some((k) => r[k] != null));
+  if (!read.length) {
+    svg.innerHTML = `<text x="${W / 2}" y="${H / 2}" text-anchor="middle" fill="var(--ink-3)"
+      font-size="13">${set.blackout_inverter ? "no phase readings in this range yet"
+      : "no inverter configured to read the phases"}</text>`;
+    return;
+  }
+
+  const now = Date.now() / 1000;
+  const t0 = now - state.hours * 3600, t1 = now;
+  const x = (ts) => M.left + plotW * Math.max(0, Math.min(1, (ts - t0) / (t1 - t0)));
+
+  /* Scaled on the phases that were there: an outage's 0 V would flatten every
+     other reading into one line. Below the scale is drawn on its floor. */
+  let lo = Infinity, hi = -Infinity;
+  for (const r of read) for (const k of PHASES) {
+    if (r[k] != null && r[k] >= 100) { lo = Math.min(lo, r[k]); hi = Math.max(hi, r[k]); }
+  }
+  if (lo === Infinity) { lo = 200; hi = 240; }
+  const step = hi - lo > 60 ? 20 : hi - lo > 20 ? 10 : 5;
+  lo = Math.floor((lo - 1) / step) * step;
+  hi = Math.max(lo + 2 * step, Math.ceil((hi + 1) / step) * step);
+  const y = (v) => M.top + plotH * (1 - (Math.max(lo, Math.min(hi, v)) - lo) / (hi - lo));
+
+  const parts = [];
+  for (const run of gridRuns(rows, now)) {
+    parts.push(`<rect x="${x(run.from)}" y="${M.top}" width="${Math.max(1.5, x(run.end) - x(run.from))}"
+      height="${plotH}" fill="${run.kind === "down" ? "var(--error)" : "var(--ink-3)"}" opacity=".1"></rect>`);
+  }
+  for (let v = lo; v <= hi; v += step) {
+    parts.push(`<line x1="${M.left}" x2="${M.left + plotW}" y1="${y(v)}" y2="${y(v)}"
+      stroke="var(--line)"></line>`);
+    parts.push(`<text x="${M.left - 7}" y="${y(v) + 4}" text-anchor="end" font-size="10.5"
+      fill="var(--ink-3)">${v}</text>`);
+  }
+  parts.push(`<text x="${M.left - 7}" y="${M.top - 6}" text-anchor="end" font-size="10"
+    fill="var(--ink-3)">V</text>`);
+  for (const tick of timeTicks(t0, t1)) {
+    parts.push(`<line x1="${x(tick.ts)}" x2="${x(tick.ts)}" y1="${M.top}" y2="${M.top + plotH}"
+      stroke="var(--line)" stroke-dasharray="2 4"></line>`);
+    parts.push(`<text x="${x(tick.ts)}" y="${H - 8}" text-anchor="middle" font-size="10.5"
+      fill="var(--ink-3)">${tick.label}</text>`);
+  }
+
+  /* A line breaks where there is no reading - the cloud failed, or the
+     inverter was left out - rather than drawing a guess across the hole.
+     A thinned month has rows a bucket apart, which is not a hole. */
+  const gap = Math.max(900, 3 * (set.sample_interval || 60), 3 * state.hours * 3600 / 1500);
+  PHASES.forEach((k, i) => {
+    let d = "", last = null;
+    for (const r of rows) {
+      if (r[k] == null || r.ts < t0) { last = null; continue; }
+      d += (last == null || r.ts - last > gap ? "M" : "L") + x(r.ts).toFixed(1) + " " + y(r[k]).toFixed(1);
+      last = r.ts;
+    }
+    if (d) parts.push(`<path d="${d}" fill="none" stroke="var(--l${i + 1})" stroke-width="1.6"
+      stroke-linejoin="round"></path>`);
+  });
+  parts.push(`<line id="gridcross" x1="0" x2="0" y1="${M.top}" y2="${M.top + plotH}"
+    stroke="var(--ink-3)" opacity="0"></line>`);
+
+  svg.innerHTML = parts.join("");
+  svg.__hover = { rows, x, W };
+}
+
+function gridHover(event) {
+  const svg = $("gridchart"), tip = $("gridtip"), box = svg.__hover;
+  if (!box || !box.rows.length) return;
+  const set = state.settings || {};
+  const rect = svg.getBoundingClientRect();
+  const scale = box.W / rect.width;
+  const px = (event.clientX - rect.left) * scale;
+  let best = box.rows[0], bestDist = Infinity;
+  for (const r of box.rows) {
+    const d = Math.abs(box.x(r.ts) - px);
+    if (d < bestDist) { bestDist = d; best = r; }
+  }
+  const cx = box.x(best.ts);
+  const cross = svg.querySelector("#gridcross");
+  cross.setAttribute("x1", cx); cross.setAttribute("x2", cx); cross.setAttribute("opacity", ".5");
+  const g = gridState(best, set);
+  tip.innerHTML = `
+    <div class="when">${stamp(best.ts)}</div>
+    ${PHASES.map((k, i) => `<div class="row"><span style="color:var(--l${i + 1})">L${i + 1}</span><span>${
+      best[k] == null ? "—" : n0(best[k], " V")}</span></div>`).join("")}
+    <div class="row"><span>frequency</span><span>${best.grid_hz == null ? "—"
+      : best.grid_hz <= 0 ? "0 Hz · rejected" : n1(best.grid_hz, " Hz")}</span></div>
+    ${best.grid_stable_s != null ? `<div class="row"><span>held</span><span>${
+      duration(best.grid_stable_s)}</span></div>` : ""}
+    ${best.sentinel_up != null ? `<div class="row"><span>sentinel</span><span>${
+      best.sentinel_up ? "online" : "offline"}</span></div>` : ""}
+    <div class="reason" style="color:${g.colour}">grid ${esc(g.word.toLowerCase())}${
+      g.unknown ? "" : " · " + esc(g.who)}</div>`;
+  tip.style.left = Math.max(4, Math.min(rect.width - 200, cx / scale - 90)) + "px";
+  tip.style.top = "18px";
+  tip.style.opacity = "1";
+}
+
+function gridUnhover() {
+  $("gridtip").style.opacity = "0";
+  const cross = $("gridchart").querySelector("#gridcross");
+  if (cross) cross.setAttribute("opacity", "0");
+}
+
+/* Why nobody could say, from one row: who was left out and who was silent. */
+function silence(r, set) {
+  const left = (name) => r[name + "_enabled"] === 0 || r[name + "_enabled"] === false;
+  const old = r.grid_age_s != null && set.inverter_max_age && r.grid_age_s > set.inverter_max_age;
+  const inverter = !set.blackout_inverter ? null : left("inverter") ? "inverter left out"
+    : old ? "inverter reading too old" : "inverter silent";
+  const sentinel = !set.blackout_sentinel ? "no sentinel" : left("sentinel") ? "sentinel left out"
+    : "sentinel silent";
+  return [inverter, sentinel].filter(Boolean).join(", ");
+}
+
+/* Every stretch the night could not have bought, newest first, with what
+   each one was. Settling counts - the grid was back, but not yet trusted -
+   and so does nobody being able to say. */
+function renderOutages() {
+  const set = (state.latest || {}).settings || {};
+  if (!set.blackout_mode) { $("outages").innerHTML = ""; $("outage-sum").textContent = ""; return; }
+  const now = Date.now() / 1000;
+  const runs = gridRuns(state.samples, now);
+
+  const range = (RANGES.find((r) => r.hours === state.hours) || {}).label || state.hours + " h";
+  const total = runs.reduce((sum, r) => sum + (r.end - r.from), 0);
+  $("outage-sum").textContent = runs.length
+    ? runs.length + " in the last " + range + " · " + duration(total) + " in all" : "";
+  if (!runs.length) {
+    $("outages").innerHTML = `<div class="empty">The grid was there the whole of the last ${esc(range)}.</div>`;
+    return;
+  }
+
+  const kind = (r) => {
+    if (r.kind === "unknown") return "unknown - nobody could say";
+    const gone = r.rows.some((x) => x.grid_source !== "inverter" || x.grid_volts < 100);
+    const refused = r.rows.some((x) => x.grid_source === "inverter" && x.grid_hz <= 0 && x.grid_volts >= 100);
+    const last = r.rows[r.rows.length - 1];
+    const settled = last.grid_source === "inverter" && last.grid_hz > 0 && last.grid_volts >= 100;
+    const what = gone ? "outage" : refused ? "rejected as too weak" : "settling";
+    return what + (settled && what !== "settling" ? ", then settling" : "");
+  };
+  const body = runs.reverse().map((r) => {
+    const sources = [...new Set(r.rows.map((x) => x.grid_source || "nobody"))].join(", ");
+    const still = r.kind === "down" ? "still down" : "still unknown";
+    return `<tr>
+      <td class="num">${esc(stamp(r.from))}</td>
+      <td class="num">${r.to ? esc(stamp(r.to)) : `<span style="color:var(--error)">${still}</span>`}</td>
+      <td class="num">${duration(r.end - r.from)}</td>
+      <td>${esc(kind(r))}</td>
+      <td>${esc(sources)}</td>
+      <td style="color:var(--ink-2)">${esc(r.kind === "unknown" ? silence(r.rows[0], set)
+        : gridState(r.rows[0], set).who)}</td>
+    </tr>`;
+  }).join("");
+  $("outages").innerHTML = `<table style="min-width:640px">
+    <thead><tr><th class="num">from</th><th class="num">until</th><th class="num">lasted</th>
+      <th>what</th><th>seen by</th><th>first said</th></tr></thead>
+    <tbody>${body}</tbody></table>`;
+}
 
 /* ---------- chart ---------- */
 
@@ -1312,22 +1625,25 @@ function renderLog(events) {
 
 /* ---------- wiring ---------- */
 
+/* One range for both charts: the Grid tab draws from the same samples. */
 function buildRanges() {
-  $("ranges").innerHTML = RANGES.map((r) =>
-    `<button data-hours="${r.hours}" class="${r.hours === state.hours ? "on" : ""}">${r.label}</button>`).join("");
-  $("ranges").onclick = (e) => {
-    const button = e.target.closest("button");
-    if (!button) return;
-    state.hours = Number(button.dataset.hours);
-    localStorage.setItem("range", state.hours);
-    buildRanges();
-    loadChart();
-  };
+  for (const id of ["ranges", "gridranges"]) {
+    $(id).innerHTML = RANGES.map((r) =>
+      `<button data-hours="${r.hours}" class="${r.hours === state.hours ? "on" : ""}">${r.label}</button>`).join("");
+    $(id).onclick = (e) => {
+      const button = e.target.closest("button");
+      if (!button) return;
+      state.hours = Number(button.dataset.hours);
+      localStorage.setItem("range", state.hours);
+      buildRanges();
+      loadChart();
+    };
+  }
 }
 
 /* The tab lives in the URL hash so a reload, a bookmark or a link to #log
    lands where it was; with no hash, the last one used in this browser. */
-const TABS = ["overview", "forecast", "nights", "log", "settings"];
+const TABS = ["overview", "grid", "forecast", "nights", "log", "settings"];
 
 function showTab(name) {
   if (!TABS.includes(name)) name = "overview";
@@ -1508,7 +1824,9 @@ async function loadState() {
     state.settings = data.settings || {};
     renderControl(data.enabled !== false);
     renderGridControl(data.inverter !== false, data.sentinel !== false, state.settings);
+    state.latest = data;
     renderCards(data);
+    renderGrid();
     renderForecast(data);
   } catch (err) {
     $("livepill").className = "pill stale";
@@ -1523,6 +1841,7 @@ async function loadChart() {
     state.forecast = data.forecast;
     state.forecasts = data.forecasts || (data.forecast ? [data.forecast] : []);
     renderChart();
+    renderGrid();
   } catch (err) { /* the pill already says we are offline */ }
 }
 
@@ -1608,6 +1927,14 @@ function boot() {
   };
   new ResizeObserver(measure).observe($("chartbox"));
   state.chartWidth = Math.max(320, $("chartbox").clientWidth - 12);
+
+  const gridSvg = $("gridchart");
+  gridSvg.addEventListener("pointermove", gridHover);
+  gridSvg.addEventListener("pointerleave", gridUnhover);
+  new ResizeObserver(() => {
+    const width = $("gridbox").clientWidth - 12;
+    if (width > 0 && Math.abs(width - state.gridWidth) > 4) { state.gridWidth = width; renderGridChart(); }
+  }).observe($("gridbox"));
 
   const refresh = () => {
     if (document.hidden) return;
