@@ -23,6 +23,7 @@ from pathlib import Path
 
 import dashboard
 import history
+import overrides
 
 SETTINGS = {
     "plug_ip": "192.168.0.239", "strategy": "forecast", "check_interval": 60,
@@ -366,9 +367,23 @@ def main():
     book = history.Logbook(path, retention_days=30)
     fill(book)
 
+    # The Settings tab over .env.example's own values, saving into the same
+    # throwaway directory. Nothing is checked and nothing restarts: a save only
+    # moves the start time on, which is what the page waits for.
+    examples = {entry["key"]: entry["example"]
+                for section in overrides.catalogue(overrides.EXAMPLE.read_text())
+                for group in section["groups"] for entry in group["keys"]}
+    editor = overrides.Editor(path.parent / "settings.env", base=examples,
+                              check=lambda candidate: None)
+
+    def saved(changed):
+        print("settings saved: %s - the watcher would restart now" % ", ".join(changed))
+        editor.started = time.time()
+
     print("invented history in %s" % path)
     print("dashboard on http://127.0.0.1:%d  (Ctrl-C to stop)" % port)
-    dashboard.serve("127.0.0.1", port, book, lambda: dict(SETTINGS))
+    dashboard.serve("127.0.0.1", port, book, lambda: dict(SETTINGS),
+                    editor=editor, on_settings=saved)
     try:
         while True:
             time.sleep(3600)

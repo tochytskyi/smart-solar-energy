@@ -26,10 +26,19 @@ cloud is not called, or the sentinel not knocked on; the inverter switched
 back on has to be seen holding the grid for the whole `DEYE_GRID_SETTLE`
 again. They can only narrow what the night believes - with nobody left to
 ask, nothing says the grid is there and the night does not buy - and the
-route refuses to store both off. These three are the only things on the page
+route refuses to store both off.
+
+**The page can also change the settings.** Its Settings tab lists every key
+`.env.example` documents and saves through `POST /api/settings` to
+`data/settings.env`, which `tapo_client.load_env` lets beat `.env` and the
+container's environment. A save is first run past `main.preflight()` in a
+fresh interpreter, so nothing the watcher would refuse is stored; then the
+loop finishes its pass and the process `execve`s itself with the environment
+it was started with (`overrides.STARTED_WITH`). `.env` itself is never
+written. The three switches and the settings are the only things on the page
 that change anything, and
 `tests/test_contract.py::ThePageChangesOnlyItsDeclaredSwitches` fails if a
-fourth appears.
+fifth appears.
 
 **Two inputs to the arithmetic, and only two**: the plug's own meter and the
 Open-Meteo forecast. The inverter is read for one thing - whether the grid is
@@ -53,11 +62,12 @@ windows is explained there, and it is the file to update when the rules change.
 | file | what it is |
 |---|---|
 | `main.py` | the loop: read, decide, switch, record. Every tunable is a module-level constant read from `.env` |
-| `tapo_client.py` | `.env` loading and the Tapo API client |
+| `tapo_client.py` | `.env` loading (with the page's overrides on top) and the Tapo API client |
+| `overrides.py` | the Settings tab: `.env.example` as a catalogue, `data/settings.env`, and the preflight a save must pass. Standard library only - the dashboard and the demo import it |
 | `solar_forecast.py` | Open-Meteo hourly yield for this roof, and the row covering "now" |
 | `deye_cloud.py` | Deye Cloud client: grid voltage and frequency only, for blackout mode |
 | `history.py` | the SQLite logbook: `samples`, `events`, `forecasts` |
-| `dashboard.py` | HTTP server for the page and its JSON. Reads, apart from the one route that throws the page's switches |
+| `dashboard.py` | HTTP server for the page and its JSON. Reads, apart from the route that throws the page's switches and the one that saves its settings |
 | `dashboard.html` | the page itself - vanilla JS, hand-drawn SVG charts, no build step |
 | `check.py` | one-off status report from the terminal |
 | `demo.py` | fills a throwaway logbook with invented data and serves the page |
@@ -74,7 +84,7 @@ behaviour is an unfinished change.
 |---|---|
 | a number the decision uses or produces | a column in `SCHEMA` **and** `SAMPLE_FIELDS` (`history.py`), the `recorder.record(...)` call (`main.py`), `CSV_COLUMNS` (`dashboard.py`), and somewhere visible in `dashboard.html` - a card row, a chart series, or the hover tooltip |
 | a new log line | `log(message, level, category)`, never a bare `print` - level is `info`/`warn`/`error` and category is what the Log panel filters on (`system`, `plug`, `forecast`, `decision`) |
-| a new config key | `.env.example` with a comment saying what it is for, `settings()` in `main.py` if the page needs to draw it (thresholds, windows), `demo.py`'s `SETTINGS`, and `DOCKER.md` |
+| a new config key | `.env.example` with a comment saying what it is for - that comment is also its help on the Settings tab, and a key not written there cannot be set from the page - `settings()` in `main.py` if the page needs to draw it (thresholds, windows), `demo.py`'s `SETTINGS`, and `DOCKER.md`. A combination the watcher must refuse goes in `main.preflight()`, so the page refuses it too instead of storing a config the container cannot start on |
 | a new window, mode or state | a `phase` value in `main.py`, its shading in the chart, its colour in the plug band, and its column in the Nights table |
 | a new way to fail | log it at `warn` or `error` so it stands out red on the page, and make sure the loop carries on |
 | a new thing the page can change | a name in `CONTROLS` (`history.py`), a branch in `do_POST` (`dashboard.py`), a control in the header **and** the state it produces drawn wherever the record shows it, and the guard in `tests/test_contract.py` widened deliberately rather than by accident |
@@ -142,8 +152,12 @@ then crops the image, so `--window-size=400,...` shows a false clip - ask for
 - **Every time is naive local time** - the windows, the forecast rows, the
   timestamps. That only works while `TZ` matches the site; the watcher warns
   when its clock disagrees with the zone Open-Meteo answered in.
-- **Credentials live in `.env` and go no further.** They are never logged, never
-  in `settings()`, never in the image (`.dockerignore`), never on the page.
+- **Credentials live in `.env` (or `data/settings.env`, mode 0600) and go no
+  further.** They are never logged, never in `settings()`, never in the image
+  (`.dockerignore`), and never served to the page: the Settings tab is told
+  whether one is set and may replace it, but cannot read it back. "Credential"
+  is decided by name (`overrides.SECRET`), so a new `..._PASSWORD` is hidden
+  without anyone remembering to.
 - **Recording must never break control.** Anything in `history.py` swallows its
   errors and reports them once: a full SD card must not stop the socket being
   switched. Keep it that way for anything you add there.
@@ -179,14 +193,29 @@ then crops the image, so `--window-size=400,...` shows a false clip - ask for
   on a LAN with no reverse DNS - `dashboard.Server` skips it. Do not go back to
   plain `ThreadingHTTPServer`.
 - The dashboard is **unauthenticated**, on the LAN by design, and it writes
-  three booleans, one per request, through `POST /api/control`: the pause, and
-  whether the inverter and the sentinel are asked about the grid. Anyone who can reach the page
-  can stop the watcher heating, which is the whole reason
-  the port must not be forwarded - `docker-compose.yml` has an optional ngrok
-  profile that does exactly that, and turning it on puts the switch on the
-  public internet with no password in front of it. Never add a second writing
-  route, and never let one of them reach the relay directly: the page says
-  whether the watcher may decide, it is not a remote control for the socket.
+  through two routes: three booleans, one per request, through
+  `POST /api/control` - the pause, and whether the inverter and the sentinel
+  are asked about the grid - and the settings through `POST /api/settings`.
+  Anyone who can reach the page can stop the watcher heating, or point it at
+  another plug, account or Deye Cloud URL that would then be handed the
+  login, which is the whole reason the port must not be forwarded -
+  `docker-compose.yml` has an optional ngrok profile that does exactly that,
+  behind Google sign-in. Never add a third writing route, and never let one of
+  them reach the relay directly: the page says whether and how the watcher
+  may decide, it is not a remote control for the socket.
+  Both routes go through `_cross_site()` first - JSON only, and an `Origin`
+  that matches `Host` - because a form or `text/plain` fetch from any other
+  website is sent by the browser without a preflight. Do not loosen it.
+- **The Settings tab only takes keys `.env.example` documents** - uncommented
+  ones; the commented-out keys are compose's. That allow-list is a security
+  boundary, not tidiness: an arbitrary variable (`LD_PRELOAD`, `PYTHONPATH`)
+  handed to a re-executing interpreter is code execution. Values are one line,
+  or the file grows a second key out of the first.
+- **A restart must be handed `overrides.STARTED_WITH`, not `os.environ`.**
+  `load_env` writes into `os.environ`, so an inherited one still carries the
+  override the page has just removed, and `.env`'s `setdefault` cannot beat
+  it. `os.execve` keeps the PID, so Docker never sees the restart and the
+  compose restart policy is not involved.
 - Docker creates a missing bind-mount source as root, and the container runs as
   uid 1000 - `data/` has to exist before `docker compose up`.
 - **The forecast is potential, not harvest. They are not the same number on

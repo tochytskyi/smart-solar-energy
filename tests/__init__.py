@@ -43,7 +43,9 @@ except ImportError:
 import tapo_client
 
 # config() calls this on every lookup, so replacing it here keeps the real
-# .env - and the credentials in it - out of the whole suite.
+# .env - and the credentials in it - out of the whole suite. The real one is
+# kept for the tests of the loader itself, which hand it files of their own.
+REAL_LOAD_ENV = tapo_client.load_env
 tapo_client.load_env = lambda *args, **kwargs: None
 
 # The watcher under test. Round numbers on purpose: a 6 kWh/day load and an

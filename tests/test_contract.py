@@ -281,14 +281,17 @@ class TheDecisionUsesTheDayTotal(unittest.TestCase):
 
 
 class ThePageChangesOnlyItsDeclaredSwitches(unittest.TestCase):
-    """The dashboard reads the logbook and writes its switches, and nothing else.
+    """The dashboard reads the logbook and writes its switches and settings, and nothing else.
 
     It was purely a reader until the pause switch arrived, and the reason it
     could be left unauthenticated on the LAN was that there was nothing to
     write. Widened once, deliberately, for a second switch - whether blackout
     mode may ask the inverter - and again for a third, whether it may ask the
-    sentinel, so what it may touch is checked by machine: one route, a fixed
-    list of switches, and no way to reach the relay.
+    sentinel. Widened a fourth time, deliberately, for the Settings tab: a
+    second route, which writes only through overrides.Editor, only keys
+    .env.example documents, and only values the watcher would start on. So
+    what it may touch is checked by machine: two routes, a fixed list of
+    switches, a fixed catalogue of keys, and no way to reach the relay.
     """
 
     DASHBOARD = ast.parse((ROOT / "dashboard.py").read_text())
@@ -305,7 +308,24 @@ class ThePageChangesOnlyItsDeclaredSwitches(unittest.TestCase):
                     and node.left.id == "route":
                 routes |= {other.value for other in node.comparators
                            if isinstance(other, ast.Constant)}
-        self.assertEqual(routes, {"/api/control"})
+        self.assertEqual(routes, {"/api/control", "/api/settings"})
+
+    def test_the_settings_route_writes_only_through_the_editor(self):
+        # One save call, and nothing in dashboard.py that opens a file for
+        # writing or touches the environment behind the editor's back.
+        self.assertEqual(len(calls(self.DASHBOARD, "save")), 1)
+        self.assertIn("editor.save(", self.SOURCE)
+        for forbidden in ("os.environ", "open(", "write_text", "putenv"):
+            self.assertNotIn(forbidden, self.SOURCE)
+
+    def test_the_editor_offers_only_documented_keys(self):
+        import overrides
+        editor = overrides.Editor(path=ROOT / "nonexistent" / "settings.env",
+                                  base={}, check=lambda path: None)
+        documented = set(re.findall(r"^([A-Z][A-Z0-9_]+)=", EXAMPLE, re.M))
+        self.assertEqual(editor.allowed, documented)
+        for dangerous in ("PATH", "LD_PRELOAD", "PYTHONPATH", "PYTHONSTARTUP", "HOME"):
+            self.assertNotIn(dangerous, editor.allowed)
 
     def test_the_switches_are_exactly_these(self):
         # A fourth one is a decision, not a side effect: it lands here first.
@@ -336,7 +356,8 @@ class ThePageChangesOnlyItsDeclaredSwitches(unittest.TestCase):
                              "dashboard.py can reach the socket itself")
 
     def test_the_page_posts_nowhere_else(self):
-        self.assertEqual(set(re.findall(r'post\(\s*"([^"]+)"', PAGE)), {"/api/control"})
+        self.assertEqual(set(re.findall(r'post\(\s*"([^"]+)"', PAGE)),
+                         {"/api/control", "/api/settings"})
         # One writer, so a second fetch with a method is a second write.
         self.assertEqual(PAGE.count("method:"), 1)
 

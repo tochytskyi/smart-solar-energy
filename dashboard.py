@@ -1,4 +1,4 @@
-"""A small web view of the logbook, and the one switch that stops the watcher.
+"""A small web view of the logbook, the switches that stop the watcher, and its settings.
 
 Served by the watcher itself on DASHBOARD_PORT, from a thread, using nothing
 but the standard library - the Pi already runs this process, so a second one
@@ -11,21 +11,25 @@ Routes:
     GET  /api/events       ?hours=24&level=&q=&limit=&before=   the log tail
     GET  /api/days         ?days=14                nightly totals
     GET  /api/export.csv   ?hours=168              the same samples as a file
+    GET  /api/settings     every .env.example key, its help and its value
     POST /api/control      {"enabled": true|false}  pause or resume the switching
                            {"inverter": true|false} let blackout mode ask the inverter, or not
                            {"sentinel": true|false} let blackout mode ask the sentinel, or not
+    POST /api/settings     {"values": {KEY: "value"}, "reset": [KEY]}  save, then restart
 
-Every route but the last is read-only, and the last one writes one boolean
-per request, out of history.CONTROLS and nothing else: whether the watcher may
-command the relay at all, and whether the grid may be judged by the inverter,
-by the sentinel, or both - never neither, which is refused.
-It cannot switch the socket itself, cannot change a threshold, and cannot
-reach anything else in the logbook.
+The GETs are read-only. /api/control writes one boolean per request, out of
+history.CONTROLS and nothing else: whether the watcher may command the relay
+at all, and whether the grid may be judged by the inverter, by the sentinel,
+or both - never neither, which is refused. /api/settings hands its body to
+overrides.Editor, which stores only keys documented in .env.example and only
+values the watcher would start on, and then tells the watcher to restart.
+Neither can switch the socket itself or reach anything else in the logbook.
 
 It is all unauthenticated: it exposes the numbers the watcher decides on,
-never the credentials it decides with. Anyone who can reach the page can
-pause the watcher, or stop it asking the inverter or the sentinel, which is the reason this
-belongs on the LAN and nowhere else. Do not forward the port.
+never the credentials it decides with - a credential is shown as set or not,
+and can be replaced but not read. Anyone who can reach the page can pause the
+watcher, or point it at another plug, account or cloud, which is the reason
+this belongs on the LAN and nowhere else. Do not forward the port.
 """
 
 import json
@@ -37,6 +41,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import history
+import overrides
 
 PAGE = Path(__file__).with_name("dashboard.html")
 
@@ -52,6 +57,8 @@ CSV_COLUMNS = (
 # anything larger is not a page this program served, and is dropped without
 # being read into memory.
 MAX_BODY = 4096
+# A settings save carries the changed keys only, every one a line of .env.
+MAX_SETTINGS_BODY = 32768
 
 
 class Server(ThreadingHTTPServer):
@@ -72,22 +79,28 @@ class Server(ThreadingHTTPServer):
         self.server_port = port
 
 
-def serve(host, port, logbook, settings, on_log=None, on_control=None):
+def serve(host, port, logbook, settings, on_log=None, on_control=None,
+          editor=None, on_settings=None):
     """Start the dashboard in a background thread and return the server.
 
     `on_control(name, on)` is called on the serving thread when the page throws
     one of history.CONTROLS, and only when it actually changed. It is a notification,
     not the switch itself - the logbook holds that, and the watcher reads it
     there - so a caller that only wants a log line can pass one.
+
+    `editor` is an overrides.Editor, or None for a page without a Settings
+    tab. `on_settings(changed_keys)` is called after a save has been stored
+    and answered - the watcher restarts on it.
     """
-    server = Server((host, port), _handler_class(logbook, settings, on_control))
+    server = Server((host, port), _handler_class(logbook, settings, on_control,
+                                                 editor, on_settings))
     threading.Thread(target=server.serve_forever, name="dashboard", daemon=True).start()
     if on_log:
         on_log("dashboard on http://%s:%d" % (host if host != "0.0.0.0" else "<this-host>", port))
     return server
 
 
-def _handler_class(logbook, settings, on_control=None):
+def _handler_class(logbook, settings, on_control=None, editor=None, on_settings=None):
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "tapo-watcher"
@@ -112,16 +125,26 @@ def _handler_class(logbook, settings, on_control=None):
                     return self._json({"days": logbook.days(_int(query, "days", 14, 1, 90))})
                 if route == "/api/export.csv":
                     return self._csv(query)
+                if route == "/api/settings":
+                    if editor is None:
+                        return self._json({"error": "settings are not editable here"}, status=404)
+                    return self._json(editor.view())
             except Exception as exc:      # a broken page must not kill the watcher
                 return self._json({"error": "%s: %s" % (type(exc).__name__, exc)}, status=500)
             self._json({"error": "not found"}, status=404)
 
         def do_POST(self):
-            """The only writes there are: the switches in history.CONTROLS."""
+            """The only writes there are: the switches in history.CONTROLS, and the settings."""
             route = urlparse(self.path).path.rstrip("/") or "/"
+            refusal = self._cross_site()
+            if refusal:
+                self._drain()
+                return self._json({"error": refusal}, status=403)
             try:
                 if route == "/api/control":
                     return self._control()
+                if route == "/api/settings" and editor is not None:
+                    return self._settings()
             except Exception as exc:
                 return self._json({"error": "%s: %s" % (type(exc).__name__, exc)}, status=500)
             self._drain()
@@ -213,6 +236,50 @@ def _handler_class(logbook, settings, on_control=None):
             if on_control is not None and after != before:
                 on_control(name, after)
             return self._json({name: after, "stored": after == wanted})
+
+        def _cross_site(self):
+            """Why this POST did not come from this page, or None if it may have.
+
+            Without it any website open in a browser on the LAN could write
+            here: a form or a text/plain fetch is a "simple" request, sent
+            without asking, and the body would be parsed all the same - enough
+            to pause the heating, or to point the inverter's cloud URL at a
+            server that then receives the login. JSON is not simple, so a
+            foreign page has to ask first, and nothing here ever says yes;
+            and a browser names the page it came from in Origin, which has to
+            be this host. curl sends no Origin, and is let through.
+            """
+            kind = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            if kind != "application/json":
+                return "expected Content-Type: application/json"
+            origin = self.headers.get("Origin")
+            if origin is not None and urlparse(origin).netloc != self.headers.get("Host"):
+                return "cross-site request refused"
+            return None
+
+        def _settings(self):
+            """Store the page's settings, answer, and only then ask for the restart.
+
+            The answer goes out before on_settings is called, so the page hears
+            "saved" from this process rather than a dropped connection from
+            the one that is shutting down.
+            """
+            body = self._drain(MAX_SETTINGS_BODY)
+            if body is None:
+                return self._json({"error": "body too large"}, status=413)
+            try:
+                payload = json.loads(body or b"{}")
+            except ValueError:
+                return self._json({"error": "expected JSON"}, status=400)
+            given = payload if isinstance(payload, dict) else {}
+            try:
+                changed = editor.save(given.get("values", {}), given.get("reset", []))
+            except overrides.Refused as exc:
+                return self._json({"error": str(exc)}, status=exc.status)
+            restarting = bool(changed) and on_settings is not None
+            self._json({"changed": changed, "restarting": restarting})
+            if restarting:
+                on_settings(changed)
 
         def _drain(self, limit=MAX_BODY):
             """This request's body, or None if it is too big to be one of ours.

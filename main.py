@@ -51,13 +51,16 @@ be read back rather than remembered. Config lives in .env. Run with:
 """
 
 import asyncio
+import os
 import signal
+import sys
 import time
 from datetime import datetime, timedelta
 
 import dashboard
 import deye_cloud
 import history
+import overrides
 import solar_forecast
 from solar_forecast import in_window, parse_hhmm, window_hours
 from tapo_client import client, config, host_answers
@@ -760,9 +763,15 @@ async def file_curves(forecast, outlook, now, day):
             LOGBOOK.forecast(curve)
 
 
-async def main():
-    global LOGBOOK
+def preflight():
+    """Every refusal the watcher starts with, and nothing it starts.
 
+    main() runs it first, and the page's Settings tab runs it in a fresh
+    interpreter on the values it is about to save (overrides.py), so a value
+    the watcher would refuse is refused at the page instead of in a container
+    that then restarts forever. Importing this module has already parsed every
+    number; what is left is what only makes sense together.
+    """
     if BOOST_STRATEGY not in ("forecast", "rain"):
         raise SystemExit("BOOST_STRATEGY must be 'forecast' or 'rain', not %r" % BOOST_STRATEGY)
     if BLACKOUT_MODE and not (BLACKOUT_SENTINEL_IP or DEYE_APP_ID):
@@ -770,6 +779,10 @@ async def main():
         # read as an outage and the load would never get its cheap grid.
         raise SystemExit("BLACKOUT_MODE is on but neither BLACKOUT_SENTINEL_IP nor"
                          " DEYE_APP_ID is set.")
+    # Read, not used: client() needs both, and finding out after the restart
+    # is too late to say so on the page.
+    config("TAPO_EMAIL")
+    config("TAPO_PASSWORD")
     # Refused at startup too, rather than discovered as an inverter that never
     # answers: the client reads all four the moment it is built.
     cloud = inverter()
@@ -777,28 +790,66 @@ async def main():
     forecast = solar_forecast.from_config()
     if forecast is None:
         raise SystemExit("No site configured - set LATITUDE and LONGITUDE in .env.")
+    return cloud, forecast
+
+
+def restart():
+    """Become a fresh copy of this process, which reads its settings again.
+
+    The same PID, so Docker sees nothing happen and the compose file's
+    restart policy is not involved. It is handed the environment it was first
+    started with, not today's os.environ - see overrides.STARTED_WITH.
+    """
+    argv = getattr(sys, "orig_argv", None) or [sys.executable] + sys.argv
+    sys.stdout.flush()
+    os.execve(sys.executable, argv, overrides.STARTED_WITH)
+
+
+async def main():
+    global LOGBOOK
+
+    cloud, forecast = preflight()
 
     LOGBOOK = history.Logbook(HISTORY_DB, HISTORY_RETENTION_DAYS)
     LOGBOOK.prune()
     recorder = Recorder(LOGBOOK, HISTORY_SAMPLE_INTERVAL)
-
-    server = None
-    if DASHBOARD_PORT:
-        try:
-            server = dashboard.serve(DASHBOARD_HOST, DASHBOARD_PORT, LOGBOOK, settings,
-                                     on_log=log, on_control=announce_control)
-        except OSError as exc:
-            log("dashboard could not take port %d: %s" % (DASHBOARD_PORT, exc), "error")
-
-    plug = Plug(client(), PLUG_IP)
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop.set)
 
+    # Set from the dashboard's thread when the Settings tab has saved: the
+    # pass in flight finishes, the logbook is closed, and the process starts
+    # over on the new values rather than switching on a mix of old and new.
+    restarting = []
+
+    def settings_saved(changed):
+        log("settings changed from the page (%s) - restarting to take them"
+            % ", ".join(changed), "warn", "system")
+        restarting.append(changed)
+        loop.call_soon_threadsafe(stop.set)
+
+    editor = overrides.Editor()
+    server = None
+    if DASHBOARD_PORT:
+        try:
+            server = dashboard.serve(DASHBOARD_HOST, DASHBOARD_PORT, LOGBOOK, settings,
+                                     on_log=log, on_control=announce_control,
+                                     editor=editor, on_settings=settings_saved)
+        except OSError as exc:
+            log("dashboard could not take port %d: %s" % (DASHBOARD_PORT, exc), "error")
+
+    plug = Plug(client(), PLUG_IP)
+
     log("controlling %s only, %.1f kWh/day budget, %.1f h/day allowance"
         % (PLUG_IP, DEVICE_DAILY_KWH, DEVICE_DAILY_HOURS))
+    # Said once a start, so a value that is not what .env reads can be traced
+    # to the page rather than puzzled over. Names only - some are passwords.
+    page_set = sorted(editor.stored())
+    if page_set:
+        log("the Settings tab overrides .env for %s (%s)" % (
+            ", ".join(page_set), editor.path))
     for name, there in ((history.CONTROL_INVERTER, cloud is not None),
                         (history.CONTROL_SENTINEL, BLACKOUT_MODE and bool(BLACKOUT_SENTINEL_IP))):
         if there and not LOGBOOK.control(name, True):
@@ -950,10 +1001,13 @@ async def main():
         except asyncio.TimeoutError:
             pass
 
-    log("stopped")
+    log("restarting" if restarting else "stopped")
     if server is not None:
         server.shutdown()
+        server.server_close()
     LOGBOOK.close()
+    if restarting:
+        restart()
 
 
 if __name__ == "__main__":

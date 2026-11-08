@@ -96,7 +96,9 @@ Pi's own address. It shows:
   `HISTORY_RETENTION_DAYS`, filterable by level and text;
 - **the pause switch** - top right, `switching` / `paused`. See below;
 - **the grid switch** - next to it, `both` / `inverter only` /
-  `sentinel only`, when blackout mode has an inverter to ask. See below.
+  `sentinel only`, when blackout mode has an inverter to ask. See below;
+- **settings** - every key in `.env.example`, with its comment, editable on
+  its own tab. Saving restarts the watcher on the new values. See below.
 
 It refreshes itself once a minute - the same cadence as `CHECK_INTERVAL`, so
 the page is never more than one decision behind - and reads well on a phone. A
@@ -197,17 +199,71 @@ curl -s -X POST -H "Content-Type: application/json" \
   -d '{"sentinel": false}' http://<pi-address>:8080/api/control
 ```
 
+### Changing the settings from the page
+
+The **Settings** tab lists every key `.env.example` documents, grouped and
+explained by the same comments, with the value the watcher is running on.
+Change any of them, press **Save and restart**, and:
+
+1. the watcher checks it would start on the new values - in a separate
+   interpreter, with exactly the parsing and refusals it starts with - and a
+   value it would refuse (`CHECK_INTERVAL=soon`, `BOOST_STRATEGY=sunny`,
+   blackout mode with nothing to ask) is refused on the page with the reason,
+   and nothing is stored;
+2. the values are written to `data/settings.env`;
+3. the pass in progress finishes, the logbook is closed, and the process
+   re-executes itself in place - the same PID, so Docker sees nothing and the
+   container is not restarted. The page waits for the new process and reloads.
+
+The socket is not touched by any of this: it keeps whatever state it was in
+for the few seconds the restart takes, and the pause and grid switches, being
+in the logbook, survive it.
+
+`.env` is **never written**. In Docker the container does not even see that
+file - compose hands its values over as environment variables - so the page
+keeps its own file in `./data`, which is already mounted and survives an
+image update. `data/settings.env` beats both `.env` and the container's
+environment; everything not in it comes from `.env` as before. A key the page
+has changed is marked `this page`, with a `use .env` button that hands it
+back, and every start logs which keys the page is overriding. Typing a value
+back to what `.env` says stops overriding it, too. `check.py` reads the same
+file, so it reports what the watcher is actually running on.
+
+Credentials - any key with `PASSWORD`, `SECRET`, `TOKEN` or `EMAIL` in its
+name - are write-only: the page shows whether one is set, never the value, and
+leaving the box empty keeps it. The commented-out keys (`TAPO_IMAGE`,
+`NGROK_*`) are compose's, not the watcher's, and are not offered: changing
+them inside the container would do nothing. A key that `.env.example` does
+not document cannot be set at all.
+
+If a change ever leaves the watcher unable to start anyway (a plug IP that is
+valid but wrong only shows up as a plug that never answers), fix it on the
+page like anything else; if the page itself is gone - `DASHBOARD_PORT`
+changed, say - delete the file on the Pi and restart:
+
+```bash
+rm ~/tapo/data/settings.env && docker compose restart
+```
+
 ### Keep it on the LAN
 
-Every other route is **read-only**, and none of them carries a credential. The
-one that is not - `POST /api/control` - writes one of two booleans per request
-(the pause, or whether the inverter is asked) and can reach nothing else: it
-cannot switch the socket, cannot change a threshold, and cannot touch the
-record.
+Every GET route is **read-only**, and none of them carries a credential. The
+two that are not write a narrow set of things. `POST /api/control` writes one
+of three booleans per request (the pause, or whether the inverter or the
+sentinel is asked) and can reach nothing else. `POST /api/settings` writes
+only keys `.env.example` documents, only values the watcher would start on,
+and then restarts it. Neither can switch the socket itself or touch the record.
 
 There is no password on any of it. Anyone who can open the page can pause the
-heating, or leave the inverter out, so keep it on the LAN and do not forward
-the port.
+heating, leave the inverter out, or **change the settings** - point the
+watcher at another plug, another Tapo account or another Deye Cloud address,
+which would hand that address your login. Keep it on the LAN and do not
+forward the port.
+
+What it does refuse is another website doing it through your browser: both
+writing routes take only `Content-Type: application/json`, and refuse a
+request whose `Origin` is not the page's own address. `curl` sends no
+`Origin`, so the commands above still work as written.
 `DASHBOARD_HOST=127.0.0.1` restricts it to the Pi itself (reachable then over
 an SSH tunnel), and `DASHBOARD_PORT=0` switches it off entirely. The optional
 `ngrok` profile in `docker-compose.yml` does the opposite - it puts this page,

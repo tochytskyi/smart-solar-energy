@@ -251,6 +251,7 @@ class Routes(unittest.TestCase):
                 urllib.request.urlopen(urllib.request.Request(
                     "http://127.0.0.1:%d/api/control" % port,
                     data=json.dumps({"enabled": wanted}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
                     method="POST"), timeout=10).close()
         finally:
             server.shutdown()

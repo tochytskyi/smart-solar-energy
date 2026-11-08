@@ -2,23 +2,28 @@
 
 import os
 import socket
-from pathlib import Path
+import time
 
 from tapo import ApiClient
 
-ENV_FILE = Path(__file__).with_name(".env")
+import overrides
+from overrides import ENV_FILE
 
 
 def load_env(path=ENV_FILE):
-    """Minimal .env loader so credentials stay out of the source."""
-    if not path.exists():
-        return
-    for raw in path.read_text().splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        os.environ.setdefault(key.strip(), value.strip())
+    """Minimal .env loader so credentials stay out of the source.
+
+    .env only fills what the environment leaves unset, as before; what the
+    page's Settings tab saved (overrides.FILE) then beats both, since it is
+    the newest word on the value.
+    """
+    for key, value in overrides.read_env(path).items():
+        os.environ.setdefault(key, value)
+    for key, value in overrides.read_env(overrides.FILE).items():
+        if os.environ.get(key) != value:
+            os.environ[key] = value
+            if key == "TZ":
+                time.tzset()        # the C library has already read the old one
 
 
 def config(name, default=None, required=True):

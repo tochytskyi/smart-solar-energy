@@ -236,12 +236,46 @@ tr.warn .tag { border-color: var(--warn); color: var(--warn); }
 tr.error .tag { border-color: var(--error); color: var(--error); }
 .msg { word-break: break-word; }
 
+/* Settings: one row per key - its name, its box, and where the value comes
+   from. A box that differs from what the watcher runs on is amber until saved. */
+.setsec + .setsec { border-top: 1px solid var(--line); }
+.setsec > h3 { margin: 0; padding: 13px 15px 0; font-size: 13px; font-weight: 620; }
+.setsec > .note { padding: 0 15px; max-width: 90ch; }
+.setgroup { padding: 10px 15px 4px; }
+.setgroup:last-child { padding-bottom: 14px; }
+.setgroup > p { margin: 0 0 6px; color: var(--ink-2); font-size: 12.5px; max-width: 90ch; }
+.setrow {
+  display: grid; grid-template-columns: minmax(140px, 220px) minmax(0, 1fr) 150px;
+  gap: 4px 12px; align-items: center; padding: 3px 0;
+}
+.setrow label { font-family: var(--mono); font-size: 12px; word-break: break-all; }
+.setrow input { cursor: text; width: 100%; min-width: 0; font-family: var(--mono); font-size: 12.5px; }
+.setrow input.dirty { border-color: var(--on); background: var(--on-soft); }
+.setrow input:disabled { opacity: .7; cursor: default; }
+.setrow .src { font-size: 11.5px; color: var(--ink-3); white-space: nowrap; }
+.setrow .src.page { color: var(--warn); }
+.setrow .src button { padding: 1px 7px; font-size: 11.5px; margin-left: 4px; }
+.setbar {
+  position: sticky; bottom: 0; z-index: 4; margin-top: 10px;
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 10px 15px; box-shadow: 0 -6px 20px rgba(0,0,0,.08);
+}
+.setbar[hidden] { display: none; }
+.setbar .spacer { flex: 1 1 auto; }
+.setbar .msg { font-size: 12.5px; color: var(--ink-2); }
+.setbar .msg.bad { color: var(--error); }
+.setbar button:disabled { opacity: .5; cursor: default; }
+#setsave:not(:disabled) { background: var(--on); border-color: var(--on); color: #fff; }
+
 .daybar { display: flex; align-items: center; gap: 8px; }
 .daybar i { display: block; height: 9px; border-radius: 3px; background: var(--on); min-width: 2px; }
 .empty { padding: 26px 15px; color: var(--ink-3); text-align: center; }
 footer { margin-top: 16px; color: var(--ink-3); font-size: 12px; display: flex; gap: 14px; flex-wrap: wrap; }
 footer a { color: var(--ink-2); }
 @media (max-width: 560px) {
+  .setrow { grid-template-columns: minmax(0, 1fr) auto; }
+  .setrow input { grid-column: 1 / -1; grid-row: 2; }
   .wrap { padding: 14px 12px 36px; }
   th, td { padding-left: 12px; padding-right: 12px; }
 }
@@ -276,6 +310,7 @@ footer a { color: var(--ink-2); }
     <button data-tab="forecast" role="tab">Forecast</button>
     <button data-tab="nights" role="tab">Nights</button>
     <button data-tab="log" role="tab">Log</button>
+    <button data-tab="settings" role="tab">Settings</button>
   </nav>
 
   <div class="tabpage" data-tab="overview" role="tabpanel">
@@ -347,6 +382,21 @@ footer a { color: var(--ink-2); }
   </section>
   </div>
 
+  <div class="tabpage" data-tab="settings" role="tabpanel" hidden>
+  <section class="panel">
+    <div class="head"><h2>Settings</h2><span class="spacer"></span>
+      <span class="sub" id="settings-file" style="color:var(--ink-3);font-size:12px"></span>
+    </div>
+    <div id="settings"><div class="empty">loading…</div></div>
+  </section>
+  <div class="setbar" id="setbar" hidden>
+    <span class="msg" id="setmsg"></span>
+    <span class="spacer"></span>
+    <button id="setdiscard" disabled>Discard</button>
+    <button id="setsave" disabled>Save and restart</button>
+  </div>
+  </div>
+
   <footer id="footer"></footer>
 </div>
 
@@ -390,16 +440,18 @@ async function api(path) {
 
 /* The only request on this page that is not a GET. It changes one boolean in
    the watcher's logbook - whether it may switch the socket, or whether it may
-   ask the inverter or the sentinel about the grid - and nothing else here
-   writes anything. */
+   ask the inverter or the sentinel about the grid - or saves the Settings
+   tab, and nothing else here writes anything. A refusal carries the server's
+   own words, which the Settings tab shows as they are. */
 async function post(path, body) {
   const res = await fetch(path, {
     method: "POST", cache: "no-store",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(path + " -> " + res.status);
-  return res.json();
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || path + " -> " + res.status);
+  return data;
 }
 
 /* ---------- formatting ---------- */
@@ -1197,10 +1249,11 @@ function buildRanges() {
 
 /* The tab lives in the URL hash so a reload, a bookmark or a link to #log
    lands where it was; with no hash, the last one used in this browser. */
-const TABS = ["overview", "forecast", "nights", "log"];
+const TABS = ["overview", "forecast", "nights", "log", "settings"];
 
 function showTab(name) {
   if (!TABS.includes(name)) name = "overview";
+  if (name === "settings") loadSettings();
   document.querySelectorAll(".tabpage").forEach((page) => { page.hidden = page.dataset.tab !== name; });
   [...$("tabs").children].forEach((b) => {
     b.classList.toggle("on", b.dataset.tab === name);
@@ -1218,6 +1271,157 @@ function buildTabs() {
   let saved = null;
   try { saved = localStorage.getItem("tab"); } catch (err) { /* as above */ }
   showTab(location.hash.slice(1) || saved);
+}
+
+/* ---------- settings ---------- */
+
+/* Every key .env.example documents, with its comment, as the watcher will
+   next start with it. A save lands in data/settings.env over .env, only once
+   the watcher has checked it would start on the values, and then it restarts
+   itself; this page waits for the new process and reloads. Credentials come
+   back as set or not, never as text - type in the box to replace one, leave
+   it empty to keep it. */
+const settings = { view: null, edits: {}, reset: new Set(), busy: false };
+
+function settingsDirty() {
+  return Object.keys(settings.edits).length + settings.reset.size;
+}
+
+async function loadSettings() {
+  // Never under someone's typing: a refetch would put the old values back.
+  if (settings.busy || settingsDirty()) return;
+  try {
+    settings.view = await api("/api/settings");
+    renderSettings();
+  } catch (err) {
+    $("settings").innerHTML = `<div class="empty">The watcher did not hand over its settings.</div>`;
+    $("setbar").hidden = true;
+  }
+}
+
+function settingKey(key) {
+  for (const sec of settings.view.sections)
+    for (const group of sec.groups)
+      for (const k of group.keys) if (k.key === key) return k;
+  return null;
+}
+
+function settingRow(k) {
+  const id = "set-" + k.key;
+  const placeholder = k.secret ? (k.set ? "set - type to replace" : "not set")
+    : k.example ? "e.g. " + k.example : "blank - the built-in default";
+  const src = k.overridden
+    ? `<span class="src page" title="${esc(k.secret ? "" : ".env says: " + (k.env || "(blank)"))}">this page<button data-reset="${esc(k.key)}">use .env</button></span>`
+    : (k.secret ? k.set : k.value) ? `<span class="src">.env</span>`
+    : `<span class="src" title="set nowhere - the watcher uses its built-in default">default</span>`;
+  return `<div class="setrow"><label for="${id}">${esc(k.key)}</label>
+    <input id="${id}" data-key="${esc(k.key)}" type="${k.secret ? "password" : "text"}"
+      value="${esc(k.secret ? "" : k.value)}" placeholder="${esc(placeholder)}"
+      autocomplete="${k.secret ? "new-password" : "off"}" spellcheck="false">${src}</div>`;
+}
+
+function renderSettings() {
+  const view = settings.view;
+  $("settings-file").textContent = "saved to " + view.file + ", over .env";
+  $("setbar").hidden = !view.sections.length;
+  $("settings").innerHTML = view.sections.length ? view.sections.map((sec) => `
+    <div class="setsec"><h3>${esc(sec.title)}</h3>
+      ${sec.note ? `<div class="note">${esc(sec.note)}</div>` : ""}
+      ${sec.groups.map((group) => `<div class="setgroup">
+        ${group.help ? `<p>${esc(group.help)}</p>` : ""}${group.keys.map(settingRow).join("")}
+      </div>`).join("")}
+    </div>`).join("")
+    : `<div class="empty">There is no .env.example beside the watcher, so there is nothing to list.</div>`;
+  markSettings();
+}
+
+function setMessage(text, bad) {
+  $("setmsg").textContent = text;
+  $("setmsg").classList.toggle("bad", !!bad);
+}
+
+function markSettings() {
+  const n = settingsDirty();
+  document.querySelectorAll("#settings input[data-key]").forEach((input) => {
+    const key = input.dataset.key;
+    const pending = settings.reset.has(key);
+    input.classList.toggle("dirty", key in settings.edits || pending);
+    input.disabled = pending || settings.busy;
+  });
+  document.querySelectorAll("#settings button[data-reset]").forEach((b) => {
+    const pending = settings.reset.has(b.dataset.reset);
+    b.textContent = pending ? "undo" : "use .env";
+    b.classList.toggle("on", pending);
+  });
+  $("setsave").disabled = !n || settings.busy;
+  $("setdiscard").disabled = !n || settings.busy;
+  if (!settings.busy) setMessage(n ? `${n} unsaved change${n > 1 ? "s" : ""}`
+    : "Saving restarts the watcher - the socket keeps its state for the few seconds that takes.");
+}
+
+function editSetting(input) {
+  const k = settingKey(input.dataset.key);
+  if (!k) return;
+  if (input.value === (k.secret ? "" : k.value)) delete settings.edits[k.key];
+  else settings.edits[k.key] = input.value;
+  markSettings();
+}
+
+function resetSetting(key) {
+  const k = settingKey(key);
+  const input = $("set-" + key);
+  if (settings.reset.has(key)) {
+    settings.reset.delete(key);
+    input.value = k.secret ? "" : k.value;
+  } else {
+    settings.reset.add(key);
+    delete settings.edits[key];
+    input.value = k.secret ? "" : k.env;
+  }
+  markSettings();
+}
+
+/* The process that answered the save is the one about to go, so "back" means
+   a different start time - not merely an answer. */
+async function waitForRestart(started) {
+  const until = Date.now() + 120000;
+  while (Date.now() < until) {
+    await new Promise((done) => setTimeout(done, 1500));
+    try {
+      if ((await api("/api/settings")).started !== started) return true;
+    } catch (err) { /* still restarting */ }
+  }
+  return false;
+}
+
+async function saveSettings() {
+  const names = [...Object.keys(settings.edits), ...[...settings.reset].map((k) => k + " (back to .env)")];
+  if (!names.length || !confirm("Save and restart the watcher?\n\n" + names.join("\n"))) return;
+  settings.busy = true;
+  markSettings();
+  setMessage("checking the watcher would start on these…");
+  let data;
+  try {
+    data = await post("/api/settings", { values: settings.edits, reset: [...settings.reset] });
+  } catch (err) {
+    settings.busy = false;
+    markSettings();
+    setMessage(err.message, true);
+    return;
+  }
+  settings.edits = {};
+  settings.reset.clear();
+  if (!data.restarting) {
+    settings.busy = false;
+    await loadSettings();
+    setMessage("Nothing to change - those are the values it already runs on.");
+    return;
+  }
+  setMessage("Saved " + data.changed.join(", ") + ". Restarting the watcher…");
+  if (await waitForRestart(settings.view.started)) { location.reload(); return; }
+  setMessage("Saved, but the watcher has not come back here within 2 min. If DASHBOARD_PORT or"
+    + " DASHBOARD_HOST changed it is on the new address; otherwise read its log"
+    + " (docker compose logs).", true);
 }
 
 async function loadState() {
@@ -1271,6 +1475,24 @@ function boot() {
 
   buildRanges();
   buildTabs();
+
+  $("settings").addEventListener("input", (e) => {
+    if (e.target.dataset && e.target.dataset.key) editSetting(e.target);
+  });
+  $("settings").onclick = (e) => {
+    const button = e.target.closest("button[data-reset]");
+    if (button) resetSetting(button.dataset.reset);
+  };
+  $("setsave").onclick = saveSettings;
+  $("setdiscard").onclick = () => {
+    settings.edits = {};
+    settings.reset.clear();
+    renderSettings();
+  };
+  // Leaving with unsaved settings is almost always a mistake.
+  window.addEventListener("beforeunload", (e) => {
+    if (settingsDirty() && !settings.busy) { e.preventDefault(); e.returnValue = ""; }
+  });
 
   $("control").onclick = (e) => {
     const button = e.target.closest("button");

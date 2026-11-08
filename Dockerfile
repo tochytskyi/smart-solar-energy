@@ -21,7 +21,8 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY *.py dashboard.html ./
+# .env.example is the dashboard's Settings tab: its keys, groups and help.
+COPY *.py dashboard.html .env.example ./
 
 # The history database lives here; bind-mount it from the host to keep it
 # across image updates. Owned by the app user so the container can write it.
